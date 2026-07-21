@@ -189,6 +189,43 @@ BENCH_NPU_MONITOR=0 ./scripts/manage_qwen3_6_27b.sh bench
 
 监控覆盖 `vllm bench` 的预热和正式请求阶段。判断硬件饱和度时，应优先使用足够多的请求，并用 `BENCH_REQUEST_RATE=inf` 进行一轮无客户端限速的压力测试；否则 1 req/s 的请求注入过程本身可能拉低整段测试的平均 AICore。
 
+### A–E 对照实验矩阵
+
+使用独立编排脚本执行已固定口径的对照实验：
+
+```bash
+# 建议先逐轮执行并确认结果
+./scripts/run_qwen3_6_bench_matrix.sh A
+./scripts/run_qwen3_6_bench_matrix.sh B
+./scripts/run_qwen3_6_bench_matrix.sh C
+./scripts/run_qwen3_6_bench_matrix.sh D
+./scripts/run_qwen3_6_bench_matrix.sh E
+
+# 也可按 A → B → C → D → E 自动执行；任一轮失败即停止
+./scripts/run_qwen3_6_bench_matrix.sh all
+```
+
+所有轮次固定使用 32768 输入 Token、1024 输出 Token、64 请求、`request-rate=inf`、关闭 Thinking 和 `temperature=0`。每轮只执行一次正式 bench；启动后的短推理仅用于确认 API 能够正常生成。轮次差异如下：
+
+| 轮次 | 服务配置 | Bench 总并发 | 验证目的 |
+|---|---|---:|---|
+| A | TP4/DP1，`max-seqs=8` | 8 | 当前基线 |
+| B | TP4/DP1，`max-seqs=16` | 16 | 验证扩大 batch 的收益 |
+| C | B + `enable_reduce_sample=true` | 16 | 验证 TP/MTP 采样优化 |
+| D | TP2/DP2，`max-seqs=8`/DP 组 | 8 | 相同业务并发比较并行拓扑 |
+| E | 同 D | 16 | 比较四卡总吞吐 |
+
+每轮都会依次执行：环境与端口所有权检查、停止受管服务、按轮次启动、推理冒烟测试、正式 bench、停止服务。成功、失败或收到中断信号后都会尝试停止受管服务；如果 8000 端口属于未知进程，则安全中止而不会清理该进程。
+
+服务日志、bench 结果继续使用原有命名，并额外包含 `matrix-运行ID-轮次` 标签。编排过程和实验配置分别保存在：
+
+```text
+runtime/qwen3.6-27b/matrix-运行ID-轮次.log
+runtime/qwen3.6-27b/matrix-运行ID-轮次-manifest.txt
+```
+
+执行 `all` 时五轮共用同一个运行 ID，便于成组提交和分析。F0/F1/F3 的 MTP 对照暂不包含在脚本中，待 A–E 结果确定最优并行配置后再补充。
+
 ## 环境变量覆盖
 
 脚本内置的默认值可以直接使用，也可以在单次启动时覆盖。例如：
@@ -219,6 +256,8 @@ START_TIMEOUT
 STOP_TIMEOUT
 LOG_RETENTION
 NPU_DEVICE_IDS
+ENABLE_REDUCE_SAMPLE
+RUN_LABEL
 RUNTIME_DIR
 BENCH_INPUT_LEN
 BENCH_OUTPUT_LEN
@@ -228,6 +267,7 @@ BENCH_MAX_CONCURRENCY
 BENCH_THINKING
 BENCH_NPU_MONITOR
 BENCH_NPU_SAMPLE_INTERVAL
+BENCH_TEMPERATURE
 ```
 
 默认 `OFFLINE_MODE=1`，强制从本地模型目录加载。需要允许框架联网补齐文件时：

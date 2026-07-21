@@ -22,6 +22,8 @@ START_TIMEOUT="${START_TIMEOUT:-1800}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
 LOG_RETENTION="${LOG_RETENTION:-10}"
 NPU_DEVICE_IDS="${NPU_DEVICE_IDS:-2 3 5 7}"
+ENABLE_REDUCE_SAMPLE="${ENABLE_REDUCE_SAMPLE:-0}"
+RUN_LABEL="${RUN_LABEL:-}"
 
 BENCH_INPUT_LEN="${BENCH_INPUT_LEN:-32768}"
 BENCH_OUTPUT_LEN="${BENCH_OUTPUT_LEN:-1024}"
@@ -31,6 +33,7 @@ BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-8}"
 BENCH_THINKING="${BENCH_THINKING:-0}"
 BENCH_NPU_MONITOR="${BENCH_NPU_MONITOR:-1}"
 BENCH_NPU_SAMPLE_INTERVAL="${BENCH_NPU_SAMPLE_INTERVAL:-1}"
+BENCH_TEMPERATURE="${BENCH_TEMPERATURE:-}"
 
 RUNTIME_DIR="${RUNTIME_DIR:-${REPO_ROOT}/runtime/qwen3.6-27b}"
 PID_FILE="${RUNTIME_DIR}/server.pid"
@@ -84,12 +87,13 @@ Common environment overrides:
   MODEL_PATH, SERVED_MODEL_NAME, HOST, PORT, TP_SIZE, DP_SIZE, DTYPE,
   MAX_MODEL_LEN, MAX_NUM_SEQS, MAX_NUM_BATCHED_TOKENS,
   GPU_MEMORY_UTILIZATION, OFFLINE_MODE, START_TIMEOUT, STOP_TIMEOUT,
-  LOG_RETENTION, NPU_DEVICE_IDS, RUNTIME_DIR
+  LOG_RETENTION, NPU_DEVICE_IDS, ENABLE_REDUCE_SAMPLE, RUN_LABEL,
+  RUNTIME_DIR
 
 Benchmark environment overrides:
   BENCH_INPUT_LEN, BENCH_OUTPUT_LEN, BENCH_NUM_PROMPTS,
   BENCH_REQUEST_RATE, BENCH_MAX_CONCURRENCY, BENCH_THINKING,
-  BENCH_NPU_MONITOR, BENCH_NPU_SAMPLE_INTERVAL
+  BENCH_NPU_MONITOR, BENCH_NPU_SAMPLE_INTERVAL, BENCH_TEMPERATURE
 
 Examples:
   ./scripts/manage_qwen3_6_27b.sh check
@@ -130,6 +134,10 @@ validate_configuration() {
   is_positive_integer "${STOP_TIMEOUT}" || die "STOP_TIMEOUT must be a positive integer"
   is_positive_integer "${LOG_RETENTION}" || die "LOG_RETENTION must be a positive integer"
   [[ "${OFFLINE_MODE}" == "0" || "${OFFLINE_MODE}" == "1" ]] || die "OFFLINE_MODE must be 0 or 1"
+  [[ "${ENABLE_REDUCE_SAMPLE}" == "0" || "${ENABLE_REDUCE_SAMPLE}" == "1" ]] \
+    || die "ENABLE_REDUCE_SAMPLE must be 0 or 1"
+  [[ -z "${RUN_LABEL}" || "${RUN_LABEL}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+    || die "RUN_LABEL may contain only letters, numbers, dots, underscores, and hyphens"
   [[ "${HOST}" == "127.0.0.1" || "${HOST}" == "localhost" ]] || warn "HOST=${HOST} exposes behavior beyond the recommended loopback-only default"
 }
 
@@ -234,13 +242,15 @@ check_model_files() {
 }
 
 check_npu_devices() {
-  local id count=0
+  local id count=0 expected_count
   for id in ${NPU_DEVICE_IDS}; do
     [[ "${id}" =~ ^[0-9]+$ ]] || die "Invalid NPU device id in NPU_DEVICE_IDS: ${id}"
     [[ -e "/dev/davinci${id}" ]] || die "NPU device is not visible in the container: /dev/davinci${id}"
     count=$((count + 1))
   done
-  (( count == TP_SIZE )) || die "Visible NPU list has ${count} devices, but TP_SIZE=${TP_SIZE}"
+  expected_count=$((TP_SIZE * DP_SIZE))
+  (( count == expected_count )) \
+    || die "Visible NPU list has ${count} devices, but TP_SIZE*DP_SIZE=${expected_count}"
 }
 
 run_preflight() {
@@ -286,7 +296,7 @@ configure_environment() {
 }
 
 build_vllm_command() {
-  local profile="$1"
+  local profile="$1" additional_config
   VLLM_COMMAND=(
     vllm serve "${MODEL_PATH}"
     --host "${HOST}"
@@ -307,11 +317,15 @@ build_vllm_command() {
   )
 
   if [[ "${profile}" == "optimized" ]]; then
+    additional_config='{"enable_cpu_binding":true}'
+    if [[ "${ENABLE_REDUCE_SAMPLE}" == "1" ]]; then
+      additional_config='{"enable_cpu_binding":true,"enable_reduce_sample":true}'
+    fi
     VLLM_COMMAND+=(
       --enable-prefix-caching
       --speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":true}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
-      --additional-config '{"enable_cpu_binding":true}'
+      --additional-config "${additional_config}"
       --async-scheduling
     )
   else
@@ -382,7 +396,7 @@ cancel_start() {
 }
 
 start_service() {
-  local profile="${1:-optimized}" managed pid pgid start_time timestamp log_path
+  local profile="${1:-optimized}" managed pid pgid start_time timestamp log_path label_suffix=""
   local elapsed=0
 
   validate_profile "${profile}"
@@ -409,7 +423,8 @@ start_service() {
   build_vllm_command "${profile}"
 
   timestamp="$(date '+%Y%m%d-%H%M%S')"
-  log_path="${RUNTIME_DIR}/serve-${timestamp}-${profile}.log"
+  [[ -n "${RUN_LABEL}" ]] && label_suffix="-${RUN_LABEL}"
+  log_path="${RUNTIME_DIR}/serve-${timestamp}${label_suffix}-${profile}.log"
   : > "${log_path}"
   printf 'Profile: %s\nStarted: %s\nCommand:' "${profile}" "$(date --iso-8601=seconds)" >> "${log_path}"
   printf ' %q' "${VLLM_COMMAND[@]}" >> "${log_path}"
@@ -602,6 +617,11 @@ validate_bench_configuration() {
       || die "BENCH_REQUEST_RATE must be greater than zero"
   fi
 
+  if [[ -n "${BENCH_TEMPERATURE}" ]]; then
+    [[ "${BENCH_TEMPERATURE}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] \
+      || die "BENCH_TEMPERATURE must be a non-negative number"
+  fi
+
   if (( BENCH_INPUT_LEN + BENCH_OUTPUT_LEN > MAX_MODEL_LEN )); then
     warn "Requested benchmark tokens (${BENCH_INPUT_LEN}+${BENCH_OUTPUT_LEN}) exceed MAX_MODEL_LEN=${MAX_MODEL_LEN}"
   fi
@@ -630,7 +650,7 @@ collect_npu_snapshot() {
   printf '%s\n' "${output}" | awk \
     -v timestamp="${timestamp}" \
     -v configured_ids="${NPU_DEVICE_IDS}" \
-    -v expected_count="${TP_SIZE}" '
+    -v expected_count="$((TP_SIZE * DP_SIZE))" '
     function trim(value) {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
       return value
@@ -903,6 +923,7 @@ show_bench_summary() {
 
 bench_service() {
   local managed timestamp log_path result_filename result_path bench_status thinking_json
+  local label_suffix="" extra_body_json
   local npu_csv_path npu_error_path summary_path sampler_started=0
 
   require_command vllm
@@ -918,14 +939,19 @@ bench_service() {
   api_ready || die "API is not ready at ${BASE_URL}/v1"
 
   timestamp="$(date '+%Y%m%d-%H%M%S')"
-  log_path="${RUNTIME_DIR}/bench-${timestamp}.log"
-  result_filename="bench-${timestamp}.json"
+  [[ -n "${RUN_LABEL}" ]] && label_suffix="-${RUN_LABEL}"
+  log_path="${RUNTIME_DIR}/bench-${timestamp}${label_suffix}.log"
+  result_filename="bench-${timestamp}${label_suffix}.json"
   result_path="${RUNTIME_DIR}/${result_filename}"
-  npu_csv_path="${RUNTIME_DIR}/bench-${timestamp}-npu.csv"
-  npu_error_path="${RUNTIME_DIR}/bench-${timestamp}-npu-monitor.err"
-  summary_path="${RUNTIME_DIR}/bench-${timestamp}-summary.txt"
+  npu_csv_path="${RUNTIME_DIR}/bench-${timestamp}${label_suffix}-npu.csv"
+  npu_error_path="${RUNTIME_DIR}/bench-${timestamp}${label_suffix}-npu-monitor.err"
+  summary_path="${RUNTIME_DIR}/bench-${timestamp}${label_suffix}-summary.txt"
   thinking_json=false
   [[ "${BENCH_THINKING}" == "1" ]] && thinking_json=true
+  extra_body_json="{\"chat_template_kwargs\":{\"enable_thinking\":${thinking_json}}}"
+  if [[ -n "${BENCH_TEMPERATURE}" ]]; then
+    extra_body_json="{\"temperature\":${BENCH_TEMPERATURE},\"chat_template_kwargs\":{\"enable_thinking\":${thinking_json}}}"
+  fi
 
   BENCH_COMMAND=(
     vllm bench serve
@@ -943,7 +969,7 @@ bench_service() {
     --max-concurrency "${BENCH_MAX_CONCURRENCY}"
     --seed "${SEED}"
     --trust-remote-code
-    --extra-body "{\"chat_template_kwargs\":{\"enable_thinking\":${thinking_json}}}"
+    --extra-body "${extra_body_json}"
     --save-result
     --result-dir "${RUNTIME_DIR}"
     --result-filename "${result_filename}"
@@ -955,7 +981,7 @@ bench_service() {
   printf '\n\n' >> "${log_path}"
 
   info "Starting serving benchmark against ${BASE_URL}/v1/chat/completions"
-  info "Input/output: ${BENCH_INPUT_LEN}/${BENCH_OUTPUT_LEN}; prompts: ${BENCH_NUM_PROMPTS}; request rate: ${BENCH_REQUEST_RATE}; max concurrency: ${BENCH_MAX_CONCURRENCY}; thinking: ${BENCH_THINKING}"
+  info "Input/output: ${BENCH_INPUT_LEN}/${BENCH_OUTPUT_LEN}; prompts: ${BENCH_NUM_PROMPTS}; request rate: ${BENCH_REQUEST_RATE}; max concurrency: ${BENCH_MAX_CONCURRENCY}; thinking: ${BENCH_THINKING}; temperature: ${BENCH_TEMPERATURE:-model default}"
 
   if start_npu_sampler "${npu_csv_path}" "${npu_error_path}"; then
     sampler_started=1
