@@ -1,7 +1,5 @@
 # tim_tmp
 
-用于在 Ascend 910B2 决赛服务器上创建 vLLM-Ascend 容器，并在容器内管理 Qwen3.6-27B 服务。
-
 ## 当前目录映射
 
 宿主机的 `/data/models` 挂载到容器的 `/root/models`，因此：
