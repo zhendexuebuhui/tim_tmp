@@ -29,6 +29,8 @@ BENCH_NUM_PROMPTS="${BENCH_NUM_PROMPTS:-100}"
 BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-1}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-8}"
 BENCH_THINKING="${BENCH_THINKING:-0}"
+BENCH_NPU_MONITOR="${BENCH_NPU_MONITOR:-1}"
+BENCH_NPU_SAMPLE_INTERVAL="${BENCH_NPU_SAMPLE_INTERVAL:-1}"
 
 RUNTIME_DIR="${RUNTIME_DIR:-${REPO_ROOT}/runtime/qwen3.6-27b}"
 PID_FILE="${RUNTIME_DIR}/server.pid"
@@ -39,6 +41,7 @@ STATE_FILE="${RUNTIME_DIR}/service_state"
 
 BASE_URL="http://${HOST}:${PORT}"
 STARTED_BY_THIS_COMMAND=0
+NPU_SAMPLER_PID=""
 
 info() {
   printf '[INFO] %s\n' "$*"
@@ -85,7 +88,8 @@ Common environment overrides:
 
 Benchmark environment overrides:
   BENCH_INPUT_LEN, BENCH_OUTPUT_LEN, BENCH_NUM_PROMPTS,
-  BENCH_REQUEST_RATE, BENCH_MAX_CONCURRENCY, BENCH_THINKING
+  BENCH_REQUEST_RATE, BENCH_MAX_CONCURRENCY, BENCH_THINKING,
+  BENCH_NPU_MONITOR, BENCH_NPU_SAMPLE_INTERVAL
 
 Examples:
   ./scripts/manage_qwen3_6_27b.sh check
@@ -95,6 +99,7 @@ Examples:
   ./scripts/manage_qwen3_6_27b.sh bench
   BENCH_NUM_PROMPTS=5 BENCH_INPUT_LEN=16384 \
     BENCH_MAX_CONCURRENCY=2 ./scripts/manage_qwen3_6_27b.sh bench
+  BENCH_NPU_SAMPLE_INTERVAL=2 ./scripts/manage_qwen3_6_27b.sh bench
   MAX_MODEL_LEN=131072 ./scripts/manage_qwen3_6_27b.sh restart optimized
   OFFLINE_MODE=0 ./scripts/manage_qwen3_6_27b.sh start
 EOF
@@ -582,6 +587,13 @@ validate_bench_configuration() {
   is_positive_integer "${BENCH_MAX_CONCURRENCY}" || die "BENCH_MAX_CONCURRENCY must be a positive integer"
   [[ "${BENCH_THINKING}" == "0" || "${BENCH_THINKING}" == "1" ]] \
     || die "BENCH_THINKING must be 0 or 1"
+  [[ "${BENCH_NPU_MONITOR}" == "0" || "${BENCH_NPU_MONITOR}" == "1" ]] \
+    || die "BENCH_NPU_MONITOR must be 0 or 1"
+
+  [[ "${BENCH_NPU_SAMPLE_INTERVAL}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] \
+    || die "BENCH_NPU_SAMPLE_INTERVAL must be a positive number"
+  awk -v value="${BENCH_NPU_SAMPLE_INTERVAL}" 'BEGIN { exit !(value > 0) }' \
+    || die "BENCH_NPU_SAMPLE_INTERVAL must be greater than zero"
 
   if [[ "${BENCH_REQUEST_RATE}" != "inf" ]]; then
     [[ "${BENCH_REQUEST_RATE}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] \
@@ -597,7 +609,7 @@ validate_bench_configuration() {
 
 cleanup_old_bench_files() {
   local pattern index entry old_file
-  for pattern in 'bench-*.log' 'bench-*.json'; do
+  for pattern in 'bench-*.log' 'bench-*.json' 'bench-*-npu.csv' 'bench-*-summary.txt' 'bench-*-npu-monitor.err'; do
     index=0
     while IFS= read -r entry; do
       [[ -n "${entry}" ]] || continue
@@ -609,6 +621,244 @@ cleanup_old_bench_files() {
       fi
     done < <(find "${RUNTIME_DIR}" -maxdepth 1 -type f -name "${pattern}" -printf '%T@ %p\n' 2>/dev/null | sort -nr)
   done
+}
+
+collect_npu_snapshot() {
+  local timestamp="${1:-$(date '+%Y-%m-%dT%H:%M:%S.%N%:z')}" output
+
+  output="$(npu-smi info 2>/dev/null)" || return 1
+  printf '%s\n' "${output}" | awk \
+    -v timestamp="${timestamp}" \
+    -v configured_ids="${NPU_DEVICE_IDS}" \
+    -v expected_count="${TP_SIZE}" '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+    function save_row(id, payload, values, value_count) {
+      value_count = split(payload, values, /[[:space:]\/]+/)
+      if (value_count < 5) return
+      rows[id] = timestamp "," id "," values[1] "," power "," temperature "," \
+        values[2] "," values[3] "," values[4] "," values[5]
+      if (!(id in seen)) {
+        seen[id] = 1
+        order[++row_count] = id
+      }
+    }
+    BEGIN {
+      wanted_count = split(configured_ids, wanted_order, /[[:space:]]+/)
+      for (i = 1; i <= wanted_count; i++) wanted[wanted_order[i]] = 1
+    }
+    {
+      column_count = split($0, columns, "|")
+      if (column_count < 5) next
+      left = trim(columns[2])
+      middle = trim(columns[3])
+      payload = trim(columns[4])
+
+      if (middle ~ /^(OK|Warning|Alarm|Critical|UNKNOWN)$/) {
+        part_count = split(left, parts, /[[:space:]]+/)
+        metric_count = split(payload, metrics, /[[:space:]\/]+/)
+        if (part_count >= 2 && parts[1] ~ /^[0-9]+$/ && metric_count >= 2) {
+          pending_id = parts[1]
+          power = metrics[1]
+          temperature = metrics[2]
+        }
+        next
+      }
+
+      if (pending_id != "" && left ~ /^[0-9]+$/ && middle ~ /:/) {
+        save_row(pending_id, payload)
+        pending_id = ""
+      }
+    }
+    END {
+      matched = 0
+      for (i = 1; i <= wanted_count; i++) {
+        if (wanted_order[i] in rows) matched++
+      }
+
+      if (matched == wanted_count) {
+        for (i = 1; i <= wanted_count; i++) print rows[wanted_order[i]]
+      } else if (row_count == expected_count) {
+        for (i = 1; i <= row_count; i++) print rows[order[i]]
+      } else {
+        for (i = 1; i <= wanted_count; i++) {
+          if (wanted_order[i] in rows) print rows[wanted_order[i]]
+        }
+      }
+    }
+  '
+}
+
+npu_sampler_loop() {
+  local csv_path="$1" error_path="$2" timestamp snapshot
+
+  trap 'exit 0' INT TERM
+  while true; do
+    timestamp="$(date '+%Y-%m-%dT%H:%M:%S.%N%:z')"
+    if snapshot="$(collect_npu_snapshot "${timestamp}")"; then
+      if [[ -n "${snapshot}" ]]; then
+        printf '%s\n' "${snapshot}" >> "${csv_path}"
+      else
+        printf '[%s] npu-smi output did not match the expected table format\n' "${timestamp}" >> "${error_path}"
+      fi
+    else
+      printf '[%s] npu-smi info failed\n' "${timestamp}" >> "${error_path}"
+    fi
+    sleep "${BENCH_NPU_SAMPLE_INTERVAL}"
+  done
+}
+
+start_npu_sampler() {
+  local csv_path="$1" error_path="$2"
+
+  printf 'timestamp,npu_id,aicore_pct,power_w,temp_c,memory_used_mb,memory_total_mb,hbm_used_mb,hbm_total_mb\n' \
+    > "${csv_path}"
+  : > "${error_path}"
+
+  if [[ "${BENCH_NPU_MONITOR}" == "0" ]]; then
+    info "NPU telemetry monitoring is disabled (BENCH_NPU_MONITOR=0)."
+    return 1
+  fi
+  if ! command -v npu-smi >/dev/null 2>&1; then
+    warn "npu-smi is unavailable; continuing benchmark without NPU telemetry."
+    return 1
+  fi
+
+  npu_sampler_loop "${csv_path}" "${error_path}" &
+  NPU_SAMPLER_PID=$!
+  info "Sampling NPU telemetry every ${BENCH_NPU_SAMPLE_INTERVAL}s (PID ${NPU_SAMPLER_PID})."
+}
+
+stop_npu_sampler() {
+  if [[ "${NPU_SAMPLER_PID}" =~ ^[1-9][0-9]*$ ]]; then
+    kill -TERM "${NPU_SAMPLER_PID}" 2>/dev/null || true
+    wait "${NPU_SAMPLER_PID}" 2>/dev/null || true
+  fi
+  NPU_SAMPLER_PID=""
+}
+
+cancel_bench() {
+  trap - INT TERM EXIT
+  warn "Benchmark cancelled; stopping NPU telemetry sampler."
+  stop_npu_sampler
+  exit 130
+}
+
+show_npu_summary() {
+  local csv_path="$1"
+
+  awk -F, -v configured_ids="${NPU_DEVICE_IDS}" -v interval="${BENCH_NPU_SAMPLE_INTERVAL}" '
+    function max(a, b) { return a > b ? a : b }
+    function remember_device(id) {
+      if (!(id in device_seen)) {
+        device_seen[id] = 1
+        discovered_order[++device_count] = id
+      }
+    }
+    function print_device(id, avg_ai, avg_power, avg_temp, avg_mem, avg_hbm, mem_text, hbm_text) {
+      if (!(id in count)) return
+      avg_ai = ai_sum[id] / count[id]
+      avg_power = power_sum[id] / count[id]
+      avg_temp = temp_sum[id] / count[id]
+      avg_mem = mem_sum[id] / count[id]
+      avg_hbm = hbm_sum[id] / count[id]
+      mem_text = mem_total[id] > 0 ? sprintf("%.0f/%.0f/%.0f", avg_mem, mem_max[id], mem_total[id]) : "n/a"
+      hbm_text = hbm_total[id] > 0 \
+        ? sprintf("%.0f/%.0f/%.0f (%.1f%%)", avg_hbm, hbm_max[id], hbm_total[id], 100 * hbm_max[id] / hbm_total[id]) \
+        : "n/a"
+      printf "  %-5s %-7d %6.1f/%-6.1f %8.1f%% %7.1f/%-7.1f %6.1f/%-6.1f %-14s %s\n", \
+        id, count[id], avg_ai, ai_max[id], 100 * ai_below_50[id] / count[id], \
+        avg_power, power_max[id], avg_temp, temp_max[id], mem_text, hbm_text
+      printed[id] = 1
+    }
+    NR == 1 { next }
+    NF >= 9 {
+      id = $2
+      remember_device(id)
+      count[id]++
+      total_rows++
+      ai_sum[id] += $3
+      ai_total += $3
+      ai_max[id] = max(ai_max[id], $3)
+      if ($3 < 50) ai_below_50[id]++
+      power_sum[id] += $4
+      power_max[id] = max(power_max[id], $4)
+      temp_sum[id] += $5
+      temp_max[id] = max(temp_max[id], $5)
+      overall_temp_max = max(overall_temp_max, $5)
+      mem_sum[id] += $6
+      mem_max[id] = max(mem_max[id], $6)
+      mem_total[id] = max(mem_total[id], $7)
+      hbm_sum[id] += $8
+      hbm_max[id] = max(hbm_max[id], $8)
+      hbm_total[id] = max(hbm_total[id], $9)
+      timestamp_count[$1]++
+      timestamp_power[$1] += $4
+      timestamp_hbm[$1] += $8
+      timestamp_hbm_total[$1] += $9
+    }
+    END {
+      printf "\nNPU telemetry summary:\n"
+      if (total_rows == 0) {
+        print "  No valid NPU telemetry samples were collected."
+        exit
+      }
+
+      printf "  Sampling interval: %ss; devices: %d; rows: %d\n", interval, device_count, total_rows
+      print "  NPU   Samples AICore avg/max  Samples<50  Power avg/max(W) Temp avg/max(C) Memory avg/max/total(MB) HBM avg/max/total(MB)"
+
+      configured_count = split(configured_ids, configured_order, /[[:space:]]+/)
+      configured_present = 0
+      for (i = 1; i <= configured_count; i++) {
+        if (configured_order[i] in count) configured_present++
+      }
+      if (configured_present == device_count && configured_count == device_count) {
+        for (i = 1; i <= configured_count; i++) print_device(configured_order[i])
+      }
+      for (i = 1; i <= device_count; i++) {
+        id = discovered_order[i]
+        if (!(id in printed)) print_device(id)
+      }
+
+      min_device_ai = -1
+      for (id in count) {
+        device_ai = ai_sum[id] / count[id]
+        if (min_device_ai < 0 || device_ai < min_device_ai) min_device_ai = device_ai
+        if (device_ai > max_device_ai) max_device_ai = device_ai
+        total_power_avg += power_sum[id] / count[id]
+        total_hbm_avg += hbm_sum[id] / count[id]
+        total_hbm_capacity += hbm_total[id]
+      }
+      for (timestamp in timestamp_count) {
+        if (timestamp_count[timestamp] != device_count) continue
+        complete_timestamp_count++
+        total_power_peak = max(total_power_peak, timestamp_power[timestamp])
+        total_hbm_peak = max(total_hbm_peak, timestamp_hbm[timestamp])
+      }
+
+      printf "  Overall AICore avg: %.1f%%; per-card average range: %.1f percentage points\n", \
+        ai_total / total_rows, max_device_ai - min_device_ai
+      if (complete_timestamp_count > 0) {
+        printf "  Total power avg/peak: %.1f/%.1f W; maximum temperature: %.1f C\n", \
+          total_power_avg, total_power_peak, overall_temp_max
+      } else {
+        printf "  Total power avg/peak: %.1f/n/a W; maximum temperature: %.1f C\n", \
+          total_power_avg, overall_temp_max
+      }
+      if (total_hbm_capacity > 0) {
+        if (complete_timestamp_count > 0) {
+          printf "  Total HBM avg/peak/capacity: %.1f/%.1f/%.1f GiB (peak %.1f%%)\n", \
+            total_hbm_avg / 1024, total_hbm_peak / 1024, total_hbm_capacity / 1024, \
+            100 * total_hbm_peak / total_hbm_capacity
+        } else {
+          printf "  Total HBM avg/peak/capacity: %.1f/n/a/%.1f GiB\n", \
+            total_hbm_avg / 1024, total_hbm_capacity / 1024
+        }
+      }
+    }
+  ' "${csv_path}"
 }
 
 show_bench_summary() {
@@ -653,6 +903,7 @@ show_bench_summary() {
 
 bench_service() {
   local managed timestamp log_path result_filename result_path bench_status thinking_json
+  local npu_csv_path npu_error_path summary_path sampler_started=0
 
   require_command vllm
   require_command curl
@@ -670,6 +921,9 @@ bench_service() {
   log_path="${RUNTIME_DIR}/bench-${timestamp}.log"
   result_filename="bench-${timestamp}.json"
   result_path="${RUNTIME_DIR}/${result_filename}"
+  npu_csv_path="${RUNTIME_DIR}/bench-${timestamp}-npu.csv"
+  npu_error_path="${RUNTIME_DIR}/bench-${timestamp}-npu-monitor.err"
+  summary_path="${RUNTIME_DIR}/bench-${timestamp}-summary.txt"
   thinking_json=false
   [[ "${BENCH_THINKING}" == "1" ]] && thinking_json=true
 
@@ -703,20 +957,47 @@ bench_service() {
   info "Starting serving benchmark against ${BASE_URL}/v1/chat/completions"
   info "Input/output: ${BENCH_INPUT_LEN}/${BENCH_OUTPUT_LEN}; prompts: ${BENCH_NUM_PROMPTS}; request rate: ${BENCH_REQUEST_RATE}; max concurrency: ${BENCH_MAX_CONCURRENCY}; thinking: ${BENCH_THINKING}"
 
+  if start_npu_sampler "${npu_csv_path}" "${npu_error_path}"; then
+    sampler_started=1
+  fi
+  trap cancel_bench INT TERM
+  trap stop_npu_sampler EXIT
+
   set +e
   "${BENCH_COMMAND[@]}" 2>&1 | tee -a "${log_path}"
   bench_status=${PIPESTATUS[0]}
   set -e
 
+  stop_npu_sampler
+  trap - INT TERM EXIT
+
+  {
+    show_bench_summary "${log_path}"
+    if (( sampler_started == 1 )); then
+      show_npu_summary "${npu_csv_path}"
+    fi
+  } | tee "${summary_path}"
+
+  if [[ -s "${npu_error_path}" ]]; then
+    warn "Some NPU samples failed; details: ${npu_error_path}"
+  else
+    rm -f -- "${npu_error_path}"
+  fi
+  if (( sampler_started == 0 )); then
+    rm -f -- "${npu_csv_path}"
+  fi
+
   if (( bench_status != 0 )); then
     error "vllm bench failed with exit code ${bench_status}."
     error "Raw output: ${log_path}"
+    error "Partial summary: ${summary_path}"
     return "${bench_status}"
   fi
 
-  show_bench_summary "${log_path}"
   info "Raw output: ${log_path}"
   [[ -f "${result_path}" ]] && info "JSON result: ${result_path}"
+  [[ -f "${npu_csv_path}" && ${sampler_started} -eq 1 ]] && info "NPU telemetry CSV: ${npu_csv_path}"
+  info "Combined summary: ${summary_path}"
   cleanup_old_bench_files
 }
 
