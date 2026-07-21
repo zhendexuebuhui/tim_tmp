@@ -243,9 +243,17 @@ OFFLINE_MODE=0 ./scripts/manage_qwen3_6_27b.sh start
 - `stop` 先发送 `SIGTERM`，默认等待 60 秒，超时后才发送 `SIGKILL`。
 - 已有健康实例时再次执行 `start` 不会重复启动。
 - 8000 端口被非本脚本进程占用时会安全失败，不会自动杀进程或切换端口。
-- 运行状态、PID 和日志保存在 `runtime/qwen3.6-27b/`，该目录不会提交到 Git。
+- 运行状态、PID 和日志保存在 `runtime/qwen3.6-27b/`。Git 默认仍忽略 PID、profile、服务状态和监控错误等临时文件，但会显示 `serve-*.log` 以及 `bench` 的日志、JSON、NPU CSV 和汇总文件，便于提交后复盘分析。
 - 每次启动生成独立日志，只保留最近 10 份；`logs` 显示最后 100 行，`logs -f` 持续跟踪。
 - 每次 `bench` 生成独立的原始日志、JSON、NPU CSV 和合并摘要，默认各保留最近 10 份。
+
+测试完成后，需要显式提交并推送这些产物，远端才能用于后续分析：
+
+```bash
+git add runtime/qwen3.6-27b/
+git commit -m "Add runtime benchmark logs"
+git push
+```
 
 ## 参考
 
