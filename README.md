@@ -149,12 +149,23 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 | 最大并发 | `8` |
 | Thinking | 关闭 |
 
-测试结束后，终端会汇总成功/失败请求数、请求及 Token 吞吐、TTFT、TPOT、ITL 等指标。完整终端输出和 vLLM 生成的 JSON 分别保存在：
+测试期间脚本默认每秒调用一次 `npu-smi info`，同步记录四张卡的 AICore、功率、温度、Memory 和 HBM 使用量。测试结束后，终端会同时汇总：
+
+- 成功/失败请求数、请求及 Token 吞吐、TTFT、TPOT、ITL 等服务指标。
+- 每张 NPU 的 AICore 平均值/峰值、低于 50% 的采样占比。
+- 每张 NPU 的功率、温度、Memory、HBM 平均值或峰值。
+- 四卡总功率、总 HBM，以及各卡平均 AICore 的极差，用于识别负载不均衡。
+
+完整输出会保存在：
 
 ```text
 runtime/qwen3.6-27b/bench-时间戳.log
 runtime/qwen3.6-27b/bench-时间戳.json
+runtime/qwen3.6-27b/bench-时间戳-npu.csv
+runtime/qwen3.6-27b/bench-时间戳-summary.txt
 ```
+
+其中 CSV 是逐秒原始数据，`summary.txt` 是服务指标与四卡指标的合并摘要。若某次 `npu-smi` 调用或解析失败，错误会记录到 `bench-时间戳-npu-monitor.err`，但不会中止 benchmark。
 
 可通过环境变量临时覆盖测试规模。例如，快速执行一次 16K 输入、5 请求、2 并发测试：
 
@@ -168,6 +179,15 @@ BENCH_MAX_CONCURRENCY=2 \
 ```
 
 如需测试 Thinking 输出，增加 `BENCH_THINKING=1`。`BENCH_REQUEST_RATE=inf` 可将所有请求立即提交，再由 `BENCH_MAX_CONCURRENCY` 限制实际并发。
+
+NPU 监控默认开启，采样周期为 1 秒。可降低采样频率，或临时关闭监控：
+
+```bash
+BENCH_NPU_SAMPLE_INTERVAL=2 ./scripts/manage_qwen3_6_27b.sh bench
+BENCH_NPU_MONITOR=0 ./scripts/manage_qwen3_6_27b.sh bench
+```
+
+监控覆盖 `vllm bench` 的预热和正式请求阶段。判断硬件饱和度时，应优先使用足够多的请求，并用 `BENCH_REQUEST_RATE=inf` 进行一轮无客户端限速的压力测试；否则 1 req/s 的请求注入过程本身可能拉低整段测试的平均 AICore。
 
 ## 环境变量覆盖
 
@@ -206,6 +226,8 @@ BENCH_NUM_PROMPTS
 BENCH_REQUEST_RATE
 BENCH_MAX_CONCURRENCY
 BENCH_THINKING
+BENCH_NPU_MONITOR
+BENCH_NPU_SAMPLE_INTERVAL
 ```
 
 默认 `OFFLINE_MODE=1`，强制从本地模型目录加载。需要允许框架联网补齐文件时：
@@ -223,7 +245,7 @@ OFFLINE_MODE=0 ./scripts/manage_qwen3_6_27b.sh start
 - 8000 端口被非本脚本进程占用时会安全失败，不会自动杀进程或切换端口。
 - 运行状态、PID 和日志保存在 `runtime/qwen3.6-27b/`，该目录不会提交到 Git。
 - 每次启动生成独立日志，只保留最近 10 份；`logs` 显示最后 100 行，`logs -f` 持续跟踪。
-- 每次 `bench` 生成独立的原始日志和 JSON 结果，默认各保留最近 10 份。
+- 每次 `bench` 生成独立的原始日志、JSON、NPU CSV 和合并摘要，默认各保留最近 10 份。
 
 ## 参考
 
