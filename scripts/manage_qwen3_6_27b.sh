@@ -23,6 +23,13 @@ STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
 LOG_RETENTION="${LOG_RETENTION:-10}"
 NPU_DEVICE_IDS="${NPU_DEVICE_IDS:-2 3 5 7}"
 
+BENCH_INPUT_LEN="${BENCH_INPUT_LEN:-32768}"
+BENCH_OUTPUT_LEN="${BENCH_OUTPUT_LEN:-1024}"
+BENCH_NUM_PROMPTS="${BENCH_NUM_PROMPTS:-100}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-1}"
+BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-8}"
+BENCH_THINKING="${BENCH_THINKING:-0}"
+
 RUNTIME_DIR="${RUNTIME_DIR:-${REPO_ROOT}/runtime/qwen3.6-27b}"
 PID_FILE="${RUNTIME_DIR}/server.pid"
 PROFILE_FILE="${RUNTIME_DIR}/profile"
@@ -62,6 +69,7 @@ Usage:
   manage_qwen3_6_27b.sh status
   manage_qwen3_6_27b.sh logs [-f]
   manage_qwen3_6_27b.sh test
+  manage_qwen3_6_27b.sh bench
   manage_qwen3_6_27b.sh help | --help | -h
 
 Profiles:
@@ -75,11 +83,18 @@ Common environment overrides:
   GPU_MEMORY_UTILIZATION, OFFLINE_MODE, START_TIMEOUT, STOP_TIMEOUT,
   LOG_RETENTION, NPU_DEVICE_IDS, RUNTIME_DIR
 
+Benchmark environment overrides:
+  BENCH_INPUT_LEN, BENCH_OUTPUT_LEN, BENCH_NUM_PROMPTS,
+  BENCH_REQUEST_RATE, BENCH_MAX_CONCURRENCY, BENCH_THINKING
+
 Examples:
   ./scripts/manage_qwen3_6_27b.sh check
   ./scripts/manage_qwen3_6_27b.sh start
   ./scripts/manage_qwen3_6_27b.sh start safe
   ./scripts/manage_qwen3_6_27b.sh logs -f
+  ./scripts/manage_qwen3_6_27b.sh bench
+  BENCH_NUM_PROMPTS=5 BENCH_INPUT_LEN=16384 \
+    BENCH_MAX_CONCURRENCY=2 ./scripts/manage_qwen3_6_27b.sh bench
   MAX_MODEL_LEN=131072 ./scripts/manage_qwen3_6_27b.sh restart optimized
   OFFLINE_MODE=0 ./scripts/manage_qwen3_6_27b.sh start
 EOF
@@ -560,6 +575,151 @@ PY
   info "Inference smoke test passed."
 }
 
+validate_bench_configuration() {
+  is_positive_integer "${BENCH_INPUT_LEN}" || die "BENCH_INPUT_LEN must be a positive integer"
+  is_positive_integer "${BENCH_OUTPUT_LEN}" || die "BENCH_OUTPUT_LEN must be a positive integer"
+  is_positive_integer "${BENCH_NUM_PROMPTS}" || die "BENCH_NUM_PROMPTS must be a positive integer"
+  is_positive_integer "${BENCH_MAX_CONCURRENCY}" || die "BENCH_MAX_CONCURRENCY must be a positive integer"
+  [[ "${BENCH_THINKING}" == "0" || "${BENCH_THINKING}" == "1" ]] \
+    || die "BENCH_THINKING must be 0 or 1"
+
+  if [[ "${BENCH_REQUEST_RATE}" != "inf" ]]; then
+    [[ "${BENCH_REQUEST_RATE}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] \
+      || die "BENCH_REQUEST_RATE must be a positive number or inf"
+    awk -v value="${BENCH_REQUEST_RATE}" 'BEGIN { exit !(value > 0) }' \
+      || die "BENCH_REQUEST_RATE must be greater than zero"
+  fi
+
+  if (( BENCH_INPUT_LEN + BENCH_OUTPUT_LEN > MAX_MODEL_LEN )); then
+    warn "Requested benchmark tokens (${BENCH_INPUT_LEN}+${BENCH_OUTPUT_LEN}) exceed MAX_MODEL_LEN=${MAX_MODEL_LEN}"
+  fi
+}
+
+cleanup_old_bench_files() {
+  local pattern index entry old_file
+  for pattern in 'bench-*.log' 'bench-*.json'; do
+    index=0
+    while IFS= read -r entry; do
+      [[ -n "${entry}" ]] || continue
+      index=$((index + 1))
+      if (( index > LOG_RETENTION )); then
+        old_file="${entry#* }"
+        [[ "${old_file}" == "${RUNTIME_DIR}"/bench-* ]] || continue
+        rm -f -- "${old_file}"
+      fi
+    done < <(find "${RUNTIME_DIR}" -maxdepth 1 -type f -name "${pattern}" -printf '%T@ %p\n' 2>/dev/null | sort -nr)
+  done
+}
+
+show_bench_summary() {
+  local log_path="$1"
+  printf '\nBenchmark summary:\n'
+  awk '
+    BEGIN {
+      labels["Successful requests"] = 1
+      labels["Failed requests"] = 1
+      labels["Benchmark duration (s)"] = 1
+      labels["Total input tokens"] = 1
+      labels["Total generated tokens"] = 1
+      labels["Request throughput (req/s)"] = 1
+      labels["Output token throughput (tok/s)"] = 1
+      labels["Peak output token throughput (tok/s)"] = 1
+      labels["Peak concurrent requests"] = 1
+      labels["Total Token throughput (tok/s)"] = 1
+      labels["Mean TTFT (ms)"] = 1
+      labels["Median TTFT (ms)"] = 1
+      labels["P99 TTFT (ms)"] = 1
+      labels["Mean TPOT (ms)"] = 1
+      labels["Median TPOT (ms)"] = 1
+      labels["P99 TPOT (ms)"] = 1
+      labels["Mean ITL (ms)"] = 1
+      labels["Median ITL (ms)"] = 1
+      labels["P99 ITL (ms)"] = 1
+      labels["Mean E2EL (ms)"] = 1
+      labels["Median E2EL (ms)"] = 1
+      labels["P99 E2EL (ms)"] = 1
+    }
+    {
+      line = $0
+      gsub(/\r/, "", line)
+      separator = index(line, ":")
+      if (separator == 0) next
+      label = substr(line, 1, separator - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", label)
+      if (label in labels) print "  " line
+    }
+  ' "${log_path}"
+}
+
+bench_service() {
+  local managed timestamp log_path result_filename result_path bench_status thinking_json
+
+  require_command vllm
+  require_command curl
+  require_command tee
+  require_command awk
+  validate_bench_configuration
+  ensure_runtime_dir
+
+  managed="$(read_managed_process 2>/dev/null || true)"
+  [[ -n "${managed}" ]] || die "Qwen3.6-27B is not running under this manager"
+  load_active_endpoint
+  api_ready || die "API is not ready at ${BASE_URL}/v1"
+
+  timestamp="$(date '+%Y%m%d-%H%M%S')"
+  log_path="${RUNTIME_DIR}/bench-${timestamp}.log"
+  result_filename="bench-${timestamp}.json"
+  result_path="${RUNTIME_DIR}/${result_filename}"
+  thinking_json=false
+  [[ "${BENCH_THINKING}" == "1" ]] && thinking_json=true
+
+  BENCH_COMMAND=(
+    vllm bench serve
+    --backend openai-chat
+    --host "${HOST}"
+    --port "${PORT}"
+    --endpoint /v1/chat/completions
+    --model "${SERVED_MODEL_NAME}"
+    --tokenizer "${MODEL_PATH}"
+    --dataset-name random
+    --random-input-len "${BENCH_INPUT_LEN}"
+    --random-output-len "${BENCH_OUTPUT_LEN}"
+    --num-prompts "${BENCH_NUM_PROMPTS}"
+    --request-rate "${BENCH_REQUEST_RATE}"
+    --max-concurrency "${BENCH_MAX_CONCURRENCY}"
+    --seed "${SEED}"
+    --trust-remote-code
+    --extra-body "{\"chat_template_kwargs\":{\"enable_thinking\":${thinking_json}}}"
+    --save-result
+    --result-dir "${RUNTIME_DIR}"
+    --result-filename "${result_filename}"
+  )
+
+  : > "${log_path}"
+  printf 'Started: %s\nCommand:' "$(date --iso-8601=seconds)" >> "${log_path}"
+  printf ' %q' "${BENCH_COMMAND[@]}" >> "${log_path}"
+  printf '\n\n' >> "${log_path}"
+
+  info "Starting serving benchmark against ${BASE_URL}/v1/chat/completions"
+  info "Input/output: ${BENCH_INPUT_LEN}/${BENCH_OUTPUT_LEN}; prompts: ${BENCH_NUM_PROMPTS}; request rate: ${BENCH_REQUEST_RATE}; max concurrency: ${BENCH_MAX_CONCURRENCY}; thinking: ${BENCH_THINKING}"
+
+  set +e
+  "${BENCH_COMMAND[@]}" 2>&1 | tee -a "${log_path}"
+  bench_status=${PIPESTATUS[0]}
+  set -e
+
+  if (( bench_status != 0 )); then
+    error "vllm bench failed with exit code ${bench_status}."
+    error "Raw output: ${log_path}"
+    return "${bench_status}"
+  fi
+
+  show_bench_summary "${log_path}"
+  info "Raw output: ${log_path}"
+  [[ -f "${result_path}" ]] && info "JSON result: ${result_path}"
+  cleanup_old_bench_files
+}
+
 check_service() {
   run_preflight 1
   info "Environment check passed."
@@ -617,6 +777,10 @@ main() {
     test)
       (( $# == 0 )) || die "Usage: test"
       test_service
+      ;;
+    bench)
+      (( $# == 0 )) || die "Usage: bench"
+      bench_service
       ;;
     *)
       usage >&2

@@ -55,6 +55,7 @@ http://127.0.0.1:8000/v1
 ./scripts/manage_qwen3_6_27b.sh logs
 ./scripts/manage_qwen3_6_27b.sh logs -f
 ./scripts/manage_qwen3_6_27b.sh test
+./scripts/manage_qwen3_6_27b.sh bench
 
 # 内置帮助
 ./scripts/manage_qwen3_6_27b.sh --help
@@ -129,6 +130,45 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
+## 性能测试
+
+服务就绪后可直接调用 `vllm bench serve` 完成在线随机数据集测试：
+
+```bash
+./scripts/manage_qwen3_6_27b.sh bench
+```
+
+默认复现此前使用的 32K 输入、1K 输出、8 并发场景：
+
+| 参数 | 默认值 |
+|---|---:|
+| 输入 Token | `32768` |
+| 输出 Token | `1024` |
+| 请求数 | `100` |
+| 请求速率 | `1 req/s` |
+| 最大并发 | `8` |
+| Thinking | 关闭 |
+
+测试结束后，终端会汇总成功/失败请求数、请求及 Token 吞吐、TTFT、TPOT、ITL 等指标。完整终端输出和 vLLM 生成的 JSON 分别保存在：
+
+```text
+runtime/qwen3.6-27b/bench-时间戳.log
+runtime/qwen3.6-27b/bench-时间戳.json
+```
+
+可通过环境变量临时覆盖测试规模。例如，快速执行一次 16K 输入、5 请求、2 并发测试：
+
+```bash
+BENCH_INPUT_LEN=16384 \
+BENCH_OUTPUT_LEN=1024 \
+BENCH_NUM_PROMPTS=5 \
+BENCH_REQUEST_RATE=1 \
+BENCH_MAX_CONCURRENCY=2 \
+./scripts/manage_qwen3_6_27b.sh bench
+```
+
+如需测试 Thinking 输出，增加 `BENCH_THINKING=1`。`BENCH_REQUEST_RATE=inf` 可将所有请求立即提交，再由 `BENCH_MAX_CONCURRENCY` 限制实际并发。
+
 ## 环境变量覆盖
 
 脚本内置的默认值可以直接使用，也可以在单次启动时覆盖。例如：
@@ -160,6 +200,12 @@ STOP_TIMEOUT
 LOG_RETENTION
 NPU_DEVICE_IDS
 RUNTIME_DIR
+BENCH_INPUT_LEN
+BENCH_OUTPUT_LEN
+BENCH_NUM_PROMPTS
+BENCH_REQUEST_RATE
+BENCH_MAX_CONCURRENCY
+BENCH_THINKING
 ```
 
 默认 `OFFLINE_MODE=1`，强制从本地模型目录加载。需要允许框架联网补齐文件时：
@@ -177,6 +223,7 @@ OFFLINE_MODE=0 ./scripts/manage_qwen3_6_27b.sh start
 - 8000 端口被非本脚本进程占用时会安全失败，不会自动杀进程或切换端口。
 - 运行状态、PID 和日志保存在 `runtime/qwen3.6-27b/`，该目录不会提交到 Git。
 - 每次启动生成独立日志，只保留最近 10 份；`logs` 显示最后 100 行，`logs -f` 持续跟踪。
+- 每次 `bench` 生成独立的原始日志和 JSON 结果，默认各保留最近 10 份。
 
 ## 参考
 
