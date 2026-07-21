@@ -1,6 +1,6 @@
 export IMAGE=quay.io/ascend/vllm-ascend:v0.23.0rc1-openeuler
 
-docker run --rm \
+docker run \
   --name vllm-ascend-env \
   --shm-size=32g \
   --net=host \
@@ -19,4 +19,4 @@ docker run --rm \
   -v /etc/ascend_install.info:/etc/ascend_install.info \
   -v /data/.cache:/root/.cache \
   -v /data/models:/root/models \
-  -it "$IMAGE" bash
+  -itd "$IMAGE" bash
