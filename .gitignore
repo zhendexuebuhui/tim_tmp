@@ -9,3 +9,5 @@
 !/runtime/qwen3.6-27b/bench-*.json
 !/runtime/qwen3.6-27b/bench-*-npu.csv
 !/runtime/qwen3.6-27b/bench-*-summary.txt
+!/runtime/qwen3.6-27b/matrix-*.log
+!/runtime/qwen3.6-27b/matrix-*-manifest.txt
