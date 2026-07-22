@@ -9,20 +9,22 @@ MODEL_PATH="${MODEL_PATH:-/root/models/Qwen3.6-27B}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.6-27b}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
-TP_SIZE="${TP_SIZE:-4}"
-DP_SIZE="${DP_SIZE:-1}"
+TP_SIZE="${TP_SIZE:-2}"
+DP_SIZE="${DP_SIZE:-2}"
 DTYPE="${DTYPE:-bfloat16}"
 SEED="${SEED:-1024}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"
+SERVICE_MAX_CONCURRENCY="${SERVICE_MAX_CONCURRENCY:-8}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-16384}"
+API_SERVER_COUNT="${API_SERVER_COUNT:-2}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 OFFLINE_MODE="${OFFLINE_MODE:-1}"
 START_TIMEOUT="${START_TIMEOUT:-1800}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
 LOG_RETENTION="${LOG_RETENTION:-10}"
 NPU_DEVICE_IDS="${NPU_DEVICE_IDS:-2 3 5 7}"
-ENABLE_REDUCE_SAMPLE="${ENABLE_REDUCE_SAMPLE:-0}"
+ENABLE_REDUCE_SAMPLE="${ENABLE_REDUCE_SAMPLE:-1}"
 RUN_LABEL="${RUN_LABEL:-}"
 
 BENCH_INPUT_LEN="${BENCH_INPUT_LEN:-32768}"
@@ -80,15 +82,15 @@ Usage:
 
 Profiles:
   optimized  Default. Enables MTP, FULL_DECODE_ONLY graph mode, CPU binding,
-             async scheduling, and prefix caching.
+             reduce-sample, async scheduling, and prefix caching.
   safe       Disables the optional performance features above for diagnosis.
 
 Common environment overrides:
   MODEL_PATH, SERVED_MODEL_NAME, HOST, PORT, TP_SIZE, DP_SIZE, DTYPE,
-  MAX_MODEL_LEN, MAX_NUM_SEQS, MAX_NUM_BATCHED_TOKENS,
-  GPU_MEMORY_UTILIZATION, OFFLINE_MODE, START_TIMEOUT, STOP_TIMEOUT,
-  LOG_RETENTION, NPU_DEVICE_IDS, ENABLE_REDUCE_SAMPLE, RUN_LABEL,
-  RUNTIME_DIR
+  MAX_MODEL_LEN, SERVICE_MAX_CONCURRENCY, MAX_NUM_SEQS,
+  MAX_NUM_BATCHED_TOKENS, API_SERVER_COUNT, GPU_MEMORY_UTILIZATION,
+  OFFLINE_MODE, START_TIMEOUT, STOP_TIMEOUT, LOG_RETENTION,
+  NPU_DEVICE_IDS, ENABLE_REDUCE_SAMPLE, RUN_LABEL, RUNTIME_DIR
 
 Benchmark environment overrides:
   BENCH_INPUT_LEN, BENCH_OUTPUT_LEN, BENCH_NUM_PROMPTS,
@@ -127,6 +129,15 @@ validate_configuration() {
   (( PORT <= 65535 )) || die "PORT must be <= 65535: ${PORT}"
   is_positive_integer "${TP_SIZE}" || die "TP_SIZE must be a positive integer: ${TP_SIZE}"
   is_positive_integer "${DP_SIZE}" || die "DP_SIZE must be a positive integer: ${DP_SIZE}"
+  is_positive_integer "${SERVICE_MAX_CONCURRENCY}" \
+    || die "SERVICE_MAX_CONCURRENCY must be a positive integer: ${SERVICE_MAX_CONCURRENCY}"
+  is_positive_integer "${API_SERVER_COUNT}" \
+    || die "API_SERVER_COUNT must be a positive integer: ${API_SERVER_COUNT}"
+  if [[ -z "${MAX_NUM_SEQS}" ]]; then
+    (( SERVICE_MAX_CONCURRENCY % DP_SIZE == 0 )) \
+      || die "SERVICE_MAX_CONCURRENCY=${SERVICE_MAX_CONCURRENCY} must be divisible by DP_SIZE=${DP_SIZE}; set compatible values or explicitly set MAX_NUM_SEQS"
+    MAX_NUM_SEQS=$((SERVICE_MAX_CONCURRENCY / DP_SIZE))
+  fi
   is_positive_integer "${MAX_MODEL_LEN}" || die "MAX_MODEL_LEN must be a positive integer"
   is_positive_integer "${MAX_NUM_SEQS}" || die "MAX_NUM_SEQS must be a positive integer"
   is_positive_integer "${MAX_NUM_BATCHED_TOKENS}" || die "MAX_NUM_BATCHED_TOKENS must be a positive integer"
@@ -301,6 +312,7 @@ build_vllm_command() {
     vllm serve "${MODEL_PATH}"
     --host "${HOST}"
     --port "${PORT}"
+    --api-server-count "${API_SERVER_COUNT}"
     --data-parallel-size "${DP_SIZE}"
     --tensor-parallel-size "${TP_SIZE}"
     --seed "${SEED}"
@@ -1033,6 +1045,8 @@ check_service() {
   info "Model path: ${MODEL_PATH}"
   info "NPU devices: ${NPU_DEVICE_IDS}"
   info "Parallelism: TP=${TP_SIZE}, DP=${DP_SIZE}"
+  info "API servers: ${API_SERVER_COUNT}"
+  info "Sequence capacity: ${MAX_NUM_SEQS} per DP replica; approximately $((MAX_NUM_SEQS * DP_SIZE)) total running requests"
   info "API: ${BASE_URL}/v1"
   info "Runtime directory: ${RUNTIME_DIR}"
 }
