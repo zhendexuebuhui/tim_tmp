@@ -1,0 +1,31 @@
+
+Benchmark summary:
+  Successful requests:                     64        
+  Failed requests:                         0         
+  Benchmark duration (s):                  599.92    
+  Total input tokens:                      2097949   
+  Total generated tokens:                  65536     
+  Request throughput (req/s):              0.11      
+  Output token throughput (tok/s):         109.24    
+  Peak output token throughput (tok/s):    66.00     
+  Peak concurrent requests:                6.00      
+  Mean TTFT (ms):                          8776.35   
+  Median TTFT (ms):                        8401.78   
+  P99 TTFT (ms):                           16888.85  
+  Mean TPOT (ms):                          27.76     
+  Median TPOT (ms):                        33.24     
+  P99 TPOT (ms):                           37.82     
+  Mean ITL (ms):                           93.82     
+  Median ITL (ms):                         64.15     
+  P99 ITL (ms):                            731.22    
+
+NPU telemetry summary:
+  Sampling interval: 1s; devices: 4; rows: 1448
+  NPU   Samples AICore avg/max  Samples<50  Power avg/max(W) Temp avg/max(C) Memory avg/max/total(MB) HBM avg/max/total(MB)
+  2     362       51.1/100.0      38.7%   192.4/329.0     50.0/59.0   n/a            60820/61031/65536 (93.1%)
+  3     362       51.2/100.0      35.4%   202.0/337.7     50.8/60.0   n/a            60820/61031/65536 (93.1%)
+  5     362       59.8/100.0      16.6%   218.2/331.2     55.9/66.0   n/a            60793/60991/65536 (93.1%)
+  7     362       60.9/100.0      14.4%   225.1/342.4     59.7/71.0   n/a            60793/60990/65536 (93.1%)
+  Overall AICore avg: 55.8%; per-card average range: 9.9 percentage points
+  Total power avg/peak: 837.7/1263.0 W; maximum temperature: 71.0 C
+  Total HBM avg/peak/capacity: 237.5/238.3/256.0 GiB (peak 93.1%)
