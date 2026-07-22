@@ -11,3 +11,12 @@
 !/runtime/qwen3.6-27b/bench-*-summary.txt
 !/runtime/qwen3.6-27b/matrix-*.log
 !/runtime/qwen3.6-27b/matrix-*-manifest.txt
+
+!/runtime/minimax-m2.7/
+/runtime/minimax-m2.7/*
+!/runtime/minimax-m2.7/serve-*.log
+!/runtime/minimax-m2.7/verify-*.log
+!/runtime/minimax-m2.7/bench-*.log
+!/runtime/minimax-m2.7/bench-*.jsonl
+!/runtime/minimax-m2.7/bench-*-npu.log
+!/runtime/minimax-m2.7/matrix-*.log
