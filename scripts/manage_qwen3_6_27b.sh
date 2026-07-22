@@ -14,8 +14,7 @@ DP_SIZE="${DP_SIZE:-2}"
 DTYPE="${DTYPE:-bfloat16}"
 SEED="${SEED:-1024}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
-SERVICE_MAX_CONCURRENCY="${SERVICE_MAX_CONCURRENCY:-8}"
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-16384}"
 API_SERVER_COUNT="${API_SERVER_COUNT:-2}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
@@ -87,7 +86,7 @@ Profiles:
 
 Common environment overrides:
   MODEL_PATH, SERVED_MODEL_NAME, HOST, PORT, TP_SIZE, DP_SIZE, DTYPE,
-  MAX_MODEL_LEN, SERVICE_MAX_CONCURRENCY, MAX_NUM_SEQS,
+  MAX_MODEL_LEN, MAX_NUM_SEQS,
   MAX_NUM_BATCHED_TOKENS, API_SERVER_COUNT, GPU_MEMORY_UTILIZATION,
   OFFLINE_MODE, START_TIMEOUT, STOP_TIMEOUT, LOG_RETENTION,
   NPU_DEVICE_IDS, ENABLE_REDUCE_SAMPLE, RUN_LABEL, RUNTIME_DIR
@@ -129,15 +128,8 @@ validate_configuration() {
   (( PORT <= 65535 )) || die "PORT must be <= 65535: ${PORT}"
   is_positive_integer "${TP_SIZE}" || die "TP_SIZE must be a positive integer: ${TP_SIZE}"
   is_positive_integer "${DP_SIZE}" || die "DP_SIZE must be a positive integer: ${DP_SIZE}"
-  is_positive_integer "${SERVICE_MAX_CONCURRENCY}" \
-    || die "SERVICE_MAX_CONCURRENCY must be a positive integer: ${SERVICE_MAX_CONCURRENCY}"
   is_positive_integer "${API_SERVER_COUNT}" \
     || die "API_SERVER_COUNT must be a positive integer: ${API_SERVER_COUNT}"
-  if [[ -z "${MAX_NUM_SEQS}" ]]; then
-    (( SERVICE_MAX_CONCURRENCY % DP_SIZE == 0 )) \
-      || die "SERVICE_MAX_CONCURRENCY=${SERVICE_MAX_CONCURRENCY} must be divisible by DP_SIZE=${DP_SIZE}; set compatible values or explicitly set MAX_NUM_SEQS"
-    MAX_NUM_SEQS=$((SERVICE_MAX_CONCURRENCY / DP_SIZE))
-  fi
   is_positive_integer "${MAX_MODEL_LEN}" || die "MAX_MODEL_LEN must be a positive integer"
   is_positive_integer "${MAX_NUM_SEQS}" || die "MAX_NUM_SEQS must be a positive integer"
   is_positive_integer "${MAX_NUM_BATCHED_TOKENS}" || die "MAX_NUM_BATCHED_TOKENS must be a positive integer"
