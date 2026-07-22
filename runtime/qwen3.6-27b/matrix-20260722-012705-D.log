@@ -1,0 +1,134 @@
+[MATRIX] Round D: checking the current environment and port ownership.
+[INFO] Environment check passed.
+[INFO] Model path: /root/models/Qwen3.6-27B
+[INFO] NPU devices: 2 3 5 7
+[INFO] Parallelism: TP=2, DP=2
+[INFO] API: http://127.0.0.1:8000/v1
+[INFO] Runtime directory: /root/models/tim_tmp/runtime/qwen3.6-27b
+[MATRIX] Round D: stopping any managed Qwen3.6 service.
+[INFO] Qwen3.6-27B is not running.
+[MATRIX] Round D: rechecking the clean experiment configuration.
+[INFO] Environment check passed.
+[INFO] Model path: /root/models/Qwen3.6-27B
+[INFO] NPU devices: 2 3 5 7
+[INFO] Parallelism: TP=2, DP=2
+[INFO] API: http://127.0.0.1:8000/v1
+[INFO] Runtime directory: /root/models/tim_tmp/runtime/qwen3.6-27b
+[MATRIX] Round D: starting optimized TP=2/DP=2 service.
+[INFO] Starting Qwen3.6-27B with profile 'optimized'...
+[INFO] Waiting up to 1800s for http://127.0.0.1:8000/v1/models ...
+[INFO] Still loading (30s elapsed)...
+[INFO] Still loading (60s elapsed)...
+[INFO] Still loading (90s elapsed)...
+[INFO] Still loading (120s elapsed)...
+[INFO] Still loading (150s elapsed)...
+[INFO] Still loading (180s elapsed)...
+[INFO] Still loading (210s elapsed)...
+[INFO] Still loading (240s elapsed)...
+[INFO] Still loading (270s elapsed)...
+[INFO] Still loading (300s elapsed)...
+[INFO] Still loading (330s elapsed)...
+[INFO] Qwen3.6-27B is ready.
+[INFO] Profile: optimized
+[INFO] API: http://127.0.0.1:8000/v1
+[INFO] Log: /root/models/tim_tmp/runtime/qwen3.6-27b/serve-20260722-021524-matrix-20260722-012705-D-optimized.log
+[MATRIX] Round D: running the inference smoke test.
+[INFO] Model registry is reachable. Sending a short non-thinking request...
+Response: OK
+[INFO] Inference smoke test passed.
+[MATRIX] Round D: running the single formal benchmark.
+[INFO] Starting serving benchmark against http://127.0.0.1:8000/v1/chat/completions
+[INFO] Input/output: 32768/1024; prompts: 64; request rate: inf; max concurrency: 8; thinking: 0; temperature: 0
+[INFO] Sampling NPU telemetry every 1s (PID 64006).
+INFO 07-22 02:21:17 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-22 02:21:17 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-22 02:21:17 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-22 02:21:17 [__init__.py:238] Platform plugin ascend is activated
+INFO 07-22 02:21:17 [platform.py:62] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+2026-07-22 02:21:28,810 - 64007 - ServiceProfiler - INFO - VLLM_USE_V1 not set, auto-detected via vLLM 0.23.0+empty: default 1
+INFO 07-22 02:21:29 [__init__.py:115] Registered model loader `<class 'vllm_ascend.model_loader.netloader.netloader.ModelNetLoaderElastic'>` with load format `netloader`
+INFO 07-22 02:21:29 [__init__.py:115] Registered model loader `<class 'vllm_ascend.model_loader.rfork.rfork_loader.RForkModelLoader'>` with load format `rfork`
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0xffff08a2e3e0>, trust_remote_code=True, seed=1024, num_prompts=64, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, custom_ensure_client_side_data=False, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, timed_trace_chunk_hash_size=16, timed_trace_sec_multiplier=1, timed_trace_label_timestamp='timestamp', timed_trace_label_input_length='input_length', timed_trace_label_output_length='output_length', timed_trace_label_hash_ids='hash_ids', blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=1024, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label=None, backend='openai-chat', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/chat/completions', header=None, max_concurrency=8, model='qwen3.6-27b', input_len=None, output_len=None, tokenizer='/root/models/Qwen3.6-27B', tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/root/models/tim_tmp/runtime/qwen3.6-27b', result_filename='bench-20260722-022107-matrix-20260722-012705-D.json', ignore_eos=False, self_timed=None, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-c67c1276-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, chat_template_kwargs=None, extra_body={'temperature': 0, 'chat_template_kwargs': {'enable_thinking': False}}, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds='25,50', plot_dataset_stats=False)
+INFO 07-22 02:21:32 [utils.py:90] Sampling input_len from [32768, 32768] and output_len from [1024, 1024]
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 8
+  0%|          | 0/64 [00:00<?, ?it/s]  2%|▏         | 1/64 [01:07<1:10:39, 67.30s/it]  3%|▎         | 2/64 [01:07<28:47, 27.87s/it]    5%|▍         | 3/64 [01:16<19:21, 19.04s/it]  6%|▋         | 4/64 [01:16<11:51, 11.86s/it]  8%|▊         | 5/64 [01:17<07:31,  7.66s/it] 11%|█         | 7/64 [01:39<08:54,  9.38s/it] 12%|█▎        | 8/64 [01:40<06:50,  7.34s/it] 14%|█▍        | 9/64 [02:02<10:17, 11.23s/it] 16%|█▌        | 10/64 [02:02<07:19,  8.13s/it] 17%|█▋        | 11/64 [02:11<07:17,  8.26s/it] 19%|█▉        | 12/64 [02:11<05:09,  5.95s/it] 20%|██        | 13/64 [02:19<05:39,  6.67s/it] 22%|██▏       | 14/64 [02:23<04:46,  5.73s/it] 23%|██▎       | 15/64 [02:30<04:58,  6.09s/it] 25%|██▌       | 16/64 [02:32<03:58,  4.96s/it] 27%|██▋       | 17/64 [02:53<07:30,  9.58s/it] 28%|██▊       | 18/64 [02:55<05:45,  7.50s/it] 30%|██▉       | 19/64 [03:01<05:19,  7.11s/it] 31%|███▏      | 20/64 [03:07<04:47,  6.53s/it] 33%|███▎      | 21/64 [03:10<03:57,  5.53s/it] 34%|███▍      | 22/64 [03:10<02:45,  3.95s/it] 36%|███▌      | 23/64 [03:21<04:03,  5.95s/it] 38%|███▊      | 24/64 [03:24<03:27,  5.18s/it] 39%|███▉      | 25/64 [03:42<05:54,  9.10s/it] 41%|████      | 26/64 [03:47<04:49,  7.62s/it] 42%|████▏     | 27/64 [03:52<04:23,  7.11s/it] 44%|████▍     | 28/64 [03:53<03:01,  5.03s/it] 45%|████▌     | 29/64 [04:00<03:17,  5.63s/it] 47%|████▋     | 30/64 [04:09<03:44,  6.60s/it] 48%|████▊     | 31/64 [04:09<02:36,  4.73s/it] 50%|█████     | 32/64 [04:22<03:48,  7.13s/it] 52%|█████▏    | 33/64 [04:32<04:07,  8.00s/it] 53%|█████▎    | 34/64 [04:42<04:18,  8.60s/it] 55%|█████▍    | 35/64 [04:44<03:13,  6.67s/it] 56%|█████▋    | 36/64 [04:51<03:13,  6.90s/it] 58%|█████▊    | 37/64 [04:53<02:24,  5.34s/it] 59%|█████▉    | 38/64 [05:00<02:28,  5.72s/it] 61%|██████    | 39/64 [05:09<02:54,  6.96s/it] 62%|██████▎   | 40/64 [05:16<02:45,  6.92s/it] 64%|██████▍   | 41/64 [05:21<02:26,  6.37s/it] 66%|██████▌   | 42/64 [05:27<02:13,  6.05s/it] 67%|██████▋   | 43/64 [05:39<02:50,  8.10s/it] 69%|██████▉   | 44/64 [05:40<01:55,  5.76s/it] 70%|███████   | 45/64 [05:50<02:16,  7.19s/it] 72%|███████▏  | 46/64 [05:50<01:31,  5.07s/it] 73%|███████▎  | 47/64 [06:03<02:03,  7.26s/it] 75%|███████▌  | 48/64 [06:07<01:40,  6.27s/it] 77%|███████▋  | 49/64 [06:12<01:27,  5.86s/it] 78%|███████▊  | 50/64 [06:18<01:25,  6.13s/it] 80%|███████▉  | 51/64 [06:30<01:41,  7.80s/it] 81%|████████▏ | 52/64 [06:33<01:14,  6.20s/it] 83%|████████▎ | 53/64 [06:41<01:15,  6.85s/it] 84%|████████▍ | 54/64 [06:41<00:48,  4.89s/it] 86%|████████▌ | 55/64 [06:54<01:03,  7.11s/it] 88%|████████▊ | 56/64 [06:58<00:49,  6.18s/it] 89%|████████▉ | 57/64 [07:02<00:40,  5.72s/it] 91%|█████████ | 58/64 [07:10<00:38,  6.48s/it] 92%|█████████▏| 59/64 [07:13<00:25,  5.17s/it] 94%|█████████▍| 60/64 [07:16<00:18,  4.52s/it] 95%|█████████▌| 61/64 [07:16<00:09,  3.27s/it] 97%|█████████▋| 62/64 [07:16<00:04,  2.43s/it] 98%|█████████▊| 63/64 [07:19<00:02,  2.49s/it]100%|██████████| 64/64 [07:25<00:00,  3.51s/it]100%|██████████| 64/64 [07:25<00:00,  6.96s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     64        
+Failed requests:                         0         
+Maximum request concurrency:             8         
+Benchmark duration (s):                  445.43    
+Total input tokens:                      2097949   
+Total generated tokens:                  65536     
+Request throughput (req/s):              0.14      
+Output token throughput (tok/s):         147.13    
+Peak output token throughput (tok/s):    128.00    
+Peak concurrent requests:                10.00     
+Total token throughput (tok/s):          4857.02   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          12522.50  
+Median TTFT (ms):                        8526.14   
+P99 TTFT (ms):                           49784.40  
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          40.93     
+Median TPOT (ms):                        41.44     
+P99 TPOT (ms):                           60.19     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           137.78    
+Median ITL (ms):                         63.86     
+P99 ITL (ms):                            3713.47   
+---------------Speculative Decoding---------------
+Acceptance rate (%):                     79.01     
+Acceptance length:                       3.37      
+Drafts:                                  19455     
+Draft tokens:                            58365     
+Accepted tokens:                         46115     
+Per-position acceptance (%):
+  Position 0:                            91.02     
+  Position 1:                            78.01     
+  Position 2:                            68.01     
+==================================================
+
+Benchmark summary:
+  Successful requests:                     64        
+  Failed requests:                         0         
+  Benchmark duration (s):                  445.43    
+  Total input tokens:                      2097949   
+  Total generated tokens:                  65536     
+  Request throughput (req/s):              0.14      
+  Output token throughput (tok/s):         147.13    
+  Peak output token throughput (tok/s):    128.00    
+  Peak concurrent requests:                10.00     
+  Mean TTFT (ms):                          12522.50  
+  Median TTFT (ms):                        8526.14   
+  P99 TTFT (ms):                           49784.40  
+  Mean TPOT (ms):                          40.93     
+  Median TPOT (ms):                        41.44     
+  P99 TPOT (ms):                           60.19     
+  Mean ITL (ms):                           137.78    
+  Median ITL (ms):                         63.86     
+  P99 ITL (ms):                            3713.47   
+
+NPU telemetry summary:
+  Sampling interval: 1s; devices: 4; rows: 1080
+  NPU   Samples AICore avg/max  Samples<50  Power avg/max(W) Temp avg/max(C) Memory avg/max/total(MB) HBM avg/max/total(MB)
+  2     270       58.4/100.0      16.3%   219.8/331.9     51.1/62.0   n/a            60797/61050/65536 (93.2%)
+  3     270       59.2/100.0      16.3%   229.7/334.2     51.8/63.0   n/a            60796/61050/65536 (93.2%)
+  5     270       59.5/100.0      17.0%   222.3/329.4     55.6/67.0   n/a            60803/61046/65536 (93.1%)
+  7     270       60.5/100.0      16.7%   229.1/340.7     59.5/73.0   n/a            60802/61045/65536 (93.1%)
+  Overall AICore avg: 59.4%; per-card average range: 2.1 percentage points
+  Total power avg/peak: 900.9/1270.0 W; maximum temperature: 73.0 C
+  Total HBM avg/peak/capacity: 237.5/238.5/256.0 GiB (peak 93.2%)
+[INFO] Raw output: /root/models/tim_tmp/runtime/qwen3.6-27b/bench-20260722-022107-matrix-20260722-012705-D.log
+[INFO] JSON result: /root/models/tim_tmp/runtime/qwen3.6-27b/bench-20260722-022107-matrix-20260722-012705-D.json
+[INFO] NPU telemetry CSV: /root/models/tim_tmp/runtime/qwen3.6-27b/bench-20260722-022107-matrix-20260722-012705-D-npu.csv
+[INFO] Combined summary: /root/models/tim_tmp/runtime/qwen3.6-27b/bench-20260722-022107-matrix-20260722-012705-D-summary.txt
+[MATRIX] Round D: benchmark completed.
+[INFO] Stopping Qwen3.6-27B (PID 57157, PGID 57157)...
+[INFO] Qwen3.6-27B stopped.
