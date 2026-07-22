@@ -25,6 +25,7 @@ LOG_RETENTION="${LOG_RETENTION:-10}"
 NPU_DEVICE_IDS="${NPU_DEVICE_IDS:-2 3 5 7}"
 ENABLE_REDUCE_SAMPLE="${ENABLE_REDUCE_SAMPLE:-1}"
 RUN_LABEL="${RUN_LABEL:-}"
+METRICS_INTERVAL="${METRICS_INTERVAL:-2}"
 
 BENCH_INPUT_LEN="${BENCH_INPUT_LEN:-32768}"
 BENCH_OUTPUT_LEN="${BENCH_OUTPUT_LEN:-1024}"
@@ -75,6 +76,7 @@ Usage:
   manage_qwen3_6_27b.sh restart [optimized|safe]
   manage_qwen3_6_27b.sh status
   manage_qwen3_6_27b.sh logs [-f]
+  manage_qwen3_6_27b.sh metrics [-f]
   manage_qwen3_6_27b.sh test
   manage_qwen3_6_27b.sh bench
   manage_qwen3_6_27b.sh help | --help | -h
@@ -89,7 +91,8 @@ Common environment overrides:
   MAX_MODEL_LEN, MAX_NUM_SEQS,
   MAX_NUM_BATCHED_TOKENS, API_SERVER_COUNT, GPU_MEMORY_UTILIZATION,
   OFFLINE_MODE, START_TIMEOUT, STOP_TIMEOUT, LOG_RETENTION,
-  NPU_DEVICE_IDS, ENABLE_REDUCE_SAMPLE, RUN_LABEL, RUNTIME_DIR
+  NPU_DEVICE_IDS, ENABLE_REDUCE_SAMPLE, RUN_LABEL, METRICS_INTERVAL,
+  RUNTIME_DIR
 
 Benchmark environment overrides:
   BENCH_INPUT_LEN, BENCH_OUTPUT_LEN, BENCH_NUM_PROMPTS,
@@ -101,6 +104,7 @@ Examples:
   ./scripts/manage_qwen3_6_27b.sh start
   ./scripts/manage_qwen3_6_27b.sh start safe
   ./scripts/manage_qwen3_6_27b.sh logs -f
+  ./scripts/manage_qwen3_6_27b.sh metrics -f
   ./scripts/manage_qwen3_6_27b.sh bench
   BENCH_NUM_PROMPTS=5 BENCH_INPUT_LEN=16384 \
     BENCH_MAX_CONCURRENCY=2 ./scripts/manage_qwen3_6_27b.sh bench
@@ -553,6 +557,164 @@ logs_service() {
   else
     tail -n 100 -- "${log_path}"
   fi
+}
+
+fetch_metric_snapshot() {
+  local raw
+  raw="$(curl -fsS --max-time 5 "${BASE_URL}/metrics")" || return 1
+
+  awk '
+    BEGIN {
+      prompt = generation = running = waiting = 0
+      kv_sum = kv_max = kv_count = 0
+      prefix_hits = prefix_queries = accepted = draft = 0
+      have_prompt = have_generation = 0
+    }
+    $1 !~ /^#/ && NF >= 2 {
+      name = $1
+      sub(/\{.*/, "", name)
+      value = $NF + 0
+
+      if (name == "vllm:prompt_tokens_total") {
+        prompt += value
+        have_prompt++
+      } else if (name == "vllm:generation_tokens_total") {
+        generation += value
+        have_generation++
+      } else if (name == "vllm:num_requests_running") {
+        running += value
+      } else if (name == "vllm:num_requests_waiting") {
+        waiting += value
+      } else if (name == "vllm:kv_cache_usage_perc") {
+        kv_sum += value
+        if (kv_count == 0 || value > kv_max) kv_max = value
+        kv_count++
+      } else if (name == "vllm:prefix_cache_hits_total") {
+        prefix_hits += value
+      } else if (name == "vllm:prefix_cache_queries_total") {
+        prefix_queries += value
+      } else if (name == "vllm:spec_decode_num_accepted_tokens_total") {
+        accepted += value
+      } else if (name == "vllm:spec_decode_num_draft_tokens_total") {
+        draft += value
+      }
+    }
+    END {
+      kv_avg = kv_count > 0 ? kv_sum / kv_count : -1
+      if (kv_count == 0) kv_max = -1
+      printf "%.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %d %d\n", \
+        prompt, generation, running, waiting, kv_avg, kv_max, prefix_hits, \
+        prefix_queries, accepted, draft, have_prompt, have_generation
+    }
+  ' <<< "${raw}"
+}
+
+validate_metric_snapshot() {
+  local snapshot="$1"
+  local -a values=()
+
+  read -r -a values <<< "${snapshot}"
+  (( ${#values[@]} == 12 )) || die "Unexpected response from the metrics parser"
+  [[ "${values[10]}" =~ ^[1-9][0-9]*$ ]] \
+    || die "The metrics endpoint does not expose vllm:prompt_tokens_total"
+  [[ "${values[11]}" =~ ^[1-9][0-9]*$ ]] \
+    || die "The metrics endpoint does not expose vllm:generation_tokens_total"
+}
+
+print_metrics_header() {
+  printf '%-19s %13s %12s %7s %7s %15s %27s %27s\n' \
+    "Timestamp" "Prefill tok/s" "Decode tok/s" "Running" "Waiting" \
+    "KV avg/max" "Prefix hit recent/lifetime" "MTP accept recent/lifetime"
+}
+
+print_metrics_row() {
+  local current="$1" previous="$2" elapsed="$3" timestamp
+  local -a values=() previous_values=()
+
+  read -r -a values <<< "${current}"
+  read -r -a previous_values <<< "${previous}"
+  timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
+
+  awk \
+    -v timestamp="${timestamp}" -v elapsed="${elapsed}" \
+    -v prompt="${values[0]}" -v generation="${values[1]}" \
+    -v running="${values[2]}" -v waiting="${values[3]}" \
+    -v kv_avg="${values[4]}" -v kv_max="${values[5]}" \
+    -v prefix_hits="${values[6]}" -v prefix_queries="${values[7]}" \
+    -v accepted="${values[8]}" -v draft="${values[9]}" \
+    -v prev_prompt="${previous_values[0]}" -v prev_generation="${previous_values[1]}" \
+    -v prev_prefix_hits="${previous_values[6]}" -v prev_prefix_queries="${previous_values[7]}" \
+    -v prev_accepted="${previous_values[8]}" -v prev_draft="${previous_values[9]}" '
+    function percentage(numerator, denominator) {
+      return denominator > 0 ? sprintf("%.1f%%", 100 * numerator / denominator) : "n/a"
+    }
+    BEGIN {
+      prefill_rate = prompt >= prev_prompt ? sprintf("%.1f", (prompt - prev_prompt) / elapsed) : "n/a"
+      decode_rate = generation >= prev_generation ? sprintf("%.1f", (generation - prev_generation) / elapsed) : "n/a"
+      kv = kv_avg >= 0 ? sprintf("%.1f%%/%.1f%%", 100 * kv_avg, 100 * kv_max) : "n/a"
+
+      prefix_queries_delta = prefix_queries - prev_prefix_queries
+      prefix_hits_delta = prefix_hits - prev_prefix_hits
+      prefix_recent = prefix_queries_delta > 0 && prefix_hits_delta >= 0 \
+        ? percentage(prefix_hits_delta, prefix_queries_delta) : "n/a"
+      prefix = prefix_recent "/" percentage(prefix_hits, prefix_queries)
+
+      draft_delta = draft - prev_draft
+      accepted_delta = accepted - prev_accepted
+      mtp_recent = draft_delta > 0 && accepted_delta >= 0 \
+        ? percentage(accepted_delta, draft_delta) : "n/a"
+      mtp = mtp_recent "/" percentage(accepted, draft)
+
+      printf "%-19s %13s %12s %7.0f %7.0f %15s %27s %27s\n", \
+        timestamp, prefill_rate, decode_rate, running, waiting, kv, prefix, mtp
+    }
+  '
+}
+
+metrics_service() {
+  local mode="${1:-}" previous current previous_time current_time elapsed
+  local managed
+
+  [[ -z "${mode}" || "${mode}" == "-f" ]] || die "Usage: metrics [-f]"
+  [[ "${METRICS_INTERVAL}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] \
+    || die "METRICS_INTERVAL must be a positive number"
+  awk -v value="${METRICS_INTERVAL}" 'BEGIN { exit !(value > 0) }' \
+    || die "METRICS_INTERVAL must be greater than zero"
+
+  require_command curl
+  require_command awk
+  require_command date
+  require_command sleep
+  managed="$(read_managed_process 2>/dev/null || true)"
+  [[ -n "${managed}" ]] || die "Qwen3.6-27B is not running under this manager"
+  load_active_endpoint
+  api_ready || die "API is not ready at ${BASE_URL}/v1"
+
+  previous="$(fetch_metric_snapshot)" \
+    || die "Failed to read Prometheus metrics from ${BASE_URL}/metrics"
+  validate_metric_snapshot "${previous}"
+  previous_time="$(date +%s.%N)"
+
+  info "Metrics: ${BASE_URL}/metrics; interval: ${METRICS_INTERVAL}s"
+  print_metrics_header
+  while true; do
+    sleep "${METRICS_INTERVAL}"
+    if ! current="$(fetch_metric_snapshot)"; then
+      if [[ "${mode}" == "-f" ]]; then
+        warn "Failed to read ${BASE_URL}/metrics; retrying"
+        continue
+      fi
+      die "Failed to read Prometheus metrics from ${BASE_URL}/metrics"
+    fi
+    validate_metric_snapshot "${current}"
+    current_time="$(date +%s.%N)"
+    elapsed="$(awk -v current="${current_time}" -v previous="${previous_time}" \
+      'BEGIN { printf "%.9f", current - previous }')"
+    print_metrics_row "${current}" "${previous}" "${elapsed}"
+    previous="${current}"
+    previous_time="${current_time}"
+    [[ "${mode}" == "-f" ]] || break
+  done
 }
 
 test_service() {
@@ -1086,6 +1248,10 @@ main() {
     logs)
       (( $# <= 1 )) || die "Usage: logs [-f]"
       logs_service "${1:-}"
+      ;;
+    metrics)
+      (( $# <= 1 )) || die "Usage: metrics [-f]"
+      metrics_service "${1:-}"
       ;;
     test)
       (( $# == 0 )) || die "Usage: test"
