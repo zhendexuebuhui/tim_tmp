@@ -2,7 +2,7 @@
 
 本仓库用于在 4 张 Ascend 910B2 上管理 Qwen3.6-27B 服务，并保存可复盘的在线 Benchmark、服务日志和 NPU 监控数据。
 
-当前推荐直接使用默认 `optimized` 配置：
+当前推荐直接使用默认 `optimized` 配置。以下管理命令均须在 `vllm-ascend-env` 容器内执行：
 
 ```bash
 ./scripts/manage_qwen3_6_27b.sh check
@@ -28,7 +28,7 @@
 | 容器内仓库 | `/root/models/tim_tmp` |
 | API | `127.0.0.1:8000`，未配置 API Key |
 
-容器由 [`scripts/start_vllm_ascend_container.sh`](scripts/start_vllm_ascend_container.sh) 创建，使用 host 网络、32 GiB shared memory，并挂载 4 张 NPU、Ascend 驱动、`npu-smi`、模型和缓存目录。
+容器由 [`scripts/start_vllm_ascend_container.sh`](scripts/start_vllm_ascend_container.sh) 创建，使用 host 网络、32 GiB shared memory，并挂载 4 张 NPU、Ascend 驱动、`npu-smi`、模型和缓存目录。启动脚本还会注入 `IN_VLLM_ASCEND_CONTAINER=1`，管理脚本据此拒绝在宿主机或其他未标记容器中运行。
 
 该脚本没有使用 `--rm`，因此 `docker stop` 不会删除容器；也没有配置自动重启策略。首次创建和后续恢复分别使用：
 
@@ -44,7 +44,7 @@ docker start vllm-ascend-env
 
 ## 快速开始
 
-进入容器并启动服务：
+进入容器并启动服务。不要在宿主机直接执行 `manage_qwen3_6_27b.sh`，否则脚本会立即报错退出：
 
 ```bash
 docker exec -it vllm-ascend-env bash
@@ -346,9 +346,9 @@ OFFLINE_MODE=0 ./scripts/manage_qwen3_6_27b.sh start optimized
 - `stop` 先发送 `SIGTERM`，默认等待 60 秒，超时后再发送 `SIGKILL`。
 - 已有健康实例时再次执行 `start` 不会重复启动。
 - 8000 端口被未知进程占用时会安全失败，不会自动杀进程或切换端口。
-- 运行状态、PID 和日志保存在 `runtime/qwen3.6-27b/`。
-- 每次启动和 Benchmark 生成独立文件，默认各保留最近 10 份。
-- Git 跟踪 `serve-*.log` 及 Benchmark 的 log、JSON、NPU CSV、summary 和矩阵 manifest；PID、profile、状态文件和监控错误等临时文件仍被忽略。
+- PID、PGID、profile、当前端点和 Run ID 等运行态元数据保存在容器内 `/run/qwen3.6-27b/`，不会与宿主机共享。
+- 服务日志和 Benchmark 产物保存在共享的 `runtime/qwen3.6-27b/`；每次启动和 Benchmark 生成独立文件，默认各保留最近 10 份。
+- Git 跟踪 `serve-*.log` 及 Benchmark 的 log、JSON、NPU CSV、summary 和矩阵 manifest；容器内运行态元数据不进入仓库。
 
 I/J 的历史日志中，`EngineDeadError`、强制清理进程以及 shared-memory/semaphore 泄漏警告都发生在 Benchmark 已完成后的关闭阶段；对应轮次 64/64 请求成功。这些警告不代表推理失败，但说明当前 vLLM-Ascend 多进程优雅停机仍不完善。
 
