@@ -40,6 +40,8 @@ bash ./scripts/start_vllm_ascend_container.sh
 docker start vllm-ascend-env
 ```
 
+> 旧版本创建的容器没有 `IN_VLLM_ASCEND_CONTAINER=1`。当前容器会话可临时执行 `export IN_VLLM_ASCEND_CONTAINER=1`；长期使用应在确认没有需要保留的容器内未挂载数据后，停止并删除旧容器，再通过上述启动脚本重新创建。
+
 容器重启后，模型服务不会自动启动，需要再次运行管理脚本。
 
 ## 快速开始
