@@ -4,6 +4,7 @@ docker run \
   --name vllm-ascend-env \
   --shm-size=32g \
   --net=host \
+  --env IN_VLLM_ASCEND_CONTAINER=1 \
   --device /dev/davinci2 \
   --device /dev/davinci3 \
   --device /dev/davinci5 \

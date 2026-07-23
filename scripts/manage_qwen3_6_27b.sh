@@ -38,12 +38,13 @@ BENCH_NPU_SAMPLE_INTERVAL="${BENCH_NPU_SAMPLE_INTERVAL:-1}"
 BENCH_TEMPERATURE="${BENCH_TEMPERATURE:-}"
 
 RUNTIME_DIR="${RUNTIME_DIR:-${REPO_ROOT}/runtime/qwen3.6-27b}"
-PID_FILE="${RUNTIME_DIR}/server.pid"
-PROFILE_FILE="${RUNTIME_DIR}/profile"
-STARTED_AT_FILE="${RUNTIME_DIR}/started_at"
-CURRENT_LOG_FILE="${RUNTIME_DIR}/current_log"
-STATE_FILE="${RUNTIME_DIR}/service_state"
-RUN_ID_FILE="${RUNTIME_DIR}/run_id"
+STATE_DIR="${STATE_DIR:-/run/qwen3.6-27b}"
+PID_FILE="${STATE_DIR}/server.pid"
+PROFILE_FILE="${STATE_DIR}/profile"
+STARTED_AT_FILE="${STATE_DIR}/started_at"
+CURRENT_LOG_FILE="${STATE_DIR}/current_log"
+STATE_FILE="${STATE_DIR}/service_state"
+RUN_ID_FILE="${STATE_DIR}/run_id"
 PROC_ROOT="${PROC_ROOT:-/proc}"
 
 BASE_URL="http://${HOST}:${PORT}"
@@ -65,6 +66,15 @@ error() {
 die() {
   error "$*"
   exit 1
+}
+
+require_vllm_ascend_container() {
+  if [[ "${IN_VLLM_ASCEND_CONTAINER:-}" != "1" ]]; then
+    error "This script can only run inside the designated vLLM-Ascend container."
+    error "Enter it with: docker exec -it vllm-ascend-env bash"
+    error "If this is an older container, recreate it with scripts/start_vllm_ascend_container.sh."
+    exit 1
+  fi
 }
 
 usage() {
@@ -94,7 +104,7 @@ Common environment overrides:
   MAX_NUM_BATCHED_TOKENS, API_SERVER_COUNT, GPU_MEMORY_UTILIZATION,
   OFFLINE_MODE, START_TIMEOUT, STOP_TIMEOUT, LOG_RETENTION,
   NPU_DEVICE_IDS, ENABLE_REDUCE_SAMPLE, RUN_LABEL, METRICS_INTERVAL,
-  RUNTIME_DIR
+  RUNTIME_DIR, STATE_DIR
 
 Benchmark environment overrides:
   BENCH_INPUT_LEN, BENCH_OUTPUT_LEN, BENCH_NUM_PROMPTS,
@@ -117,8 +127,9 @@ EOF
 }
 
 ensure_runtime_dir() {
-  mkdir -p -- "${RUNTIME_DIR}"
+  mkdir -p -- "${RUNTIME_DIR}" "${STATE_DIR}"
   [[ -w "${RUNTIME_DIR}" ]] || die "Runtime directory is not writable: ${RUNTIME_DIR}"
+  [[ -w "${STATE_DIR}" ]] || die "State directory is not writable: ${STATE_DIR}"
 }
 
 require_command() {
@@ -1324,7 +1335,8 @@ check_service() {
   info "API servers: ${API_SERVER_COUNT}"
   info "Sequence capacity: ${MAX_NUM_SEQS} per DP replica; approximately $((MAX_NUM_SEQS * DP_SIZE)) total running requests"
   info "API: ${BASE_URL}/v1"
-  info "Runtime directory: ${RUNTIME_DIR}"
+  info "Persistent runtime directory: ${RUNTIME_DIR}"
+  info "Container state directory: ${STATE_DIR}"
 }
 
 restart_service() {
@@ -1340,6 +1352,7 @@ restart_service() {
 
 main() {
   local command="${1:-help}"
+  require_vllm_ascend_container
   shift || true
 
   case "${command}" in
