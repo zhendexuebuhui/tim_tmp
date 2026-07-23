@@ -43,6 +43,8 @@ PROFILE_FILE="${RUNTIME_DIR}/profile"
 STARTED_AT_FILE="${RUNTIME_DIR}/started_at"
 CURRENT_LOG_FILE="${RUNTIME_DIR}/current_log"
 STATE_FILE="${RUNTIME_DIR}/service_state"
+RUN_ID_FILE="${RUNTIME_DIR}/run_id"
+PROC_ROOT="${PROC_ROOT:-/proc}"
 
 BASE_URL="http://${HOST}:${PORT}"
 STARTED_BY_THIS_COMMAND=0
@@ -156,32 +158,150 @@ validate_profile() {
 }
 
 proc_start_time() {
-  local pid="$1"
-  [[ -r "/proc/${pid}/stat" ]] || return 1
-  awk '{print $22}' "/proc/${pid}/stat"
+  local pid="$1" stat rest
+  [[ -r "${PROC_ROOT}/${pid}/stat" ]] || return 1
+  IFS= read -r stat < "${PROC_ROOT}/${pid}/stat" || return 1
+  rest="${stat##*) }"
+  [[ "${rest}" != "${stat}" ]] || return 1
+  awk '{print $20}' <<< "${rest}"
+}
+
+proc_group_id() {
+  local pid="$1" stat rest remainder
+  [[ -r "${PROC_ROOT}/${pid}/stat" ]] || return 1
+  IFS= read -r stat < "${PROC_ROOT}/${pid}/stat" || return 1
+  rest="${stat##*) }"
+  [[ "${rest}" != "${stat}" ]] || return 1
+  remainder="${rest#* }"
+  remainder="${remainder#* }"
+  printf '%s\n' "${remainder%% *}"
+}
+
+proc_state() {
+  local pid="$1" stat rest
+  [[ -r "${PROC_ROOT}/${pid}/stat" ]] || return 1
+  IFS= read -r stat < "${PROC_ROOT}/${pid}/stat" || return 1
+  rest="${stat##*) }"
+  [[ "${rest}" != "${stat}" ]] || return 1
+  printf '%s\n' "${rest%% *}"
+}
+
+process_has_run_id() {
+  local pid="$1" expected="$2" entry
+  [[ -n "${expected}" && -r "${PROC_ROOT}/${pid}/environ" ]] || return 1
+  while IFS= read -r -d '' entry; do
+    [[ "${entry}" == "VLLM_MANAGER_RUN_ID=${expected}" ]] && return 0
+  done < "${PROC_ROOT}/${pid}/environ"
+  return 1
+}
+
+find_managed_group_member() {
+  local pgid="$1" run_id="${2:-}" candidate member_pgid state command comm=""
+
+  while read -r candidate member_pgid state; do
+    [[ "${member_pgid}" == "${pgid}" && "${state}" != Z* ]] || continue
+    if [[ -n "${run_id}" ]]; then
+      process_has_run_id "${candidate}" "${run_id}" && {
+        printf '%s\n' "${candidate}"
+        return 0
+      }
+      continue
+    fi
+
+    command="$(tr '\0' ' ' < "${PROC_ROOT}/${candidate}/cmdline" 2>/dev/null || true)"
+    [[ -r "${PROC_ROOT}/${candidate}/comm" ]] && IFS= read -r comm < "${PROC_ROOT}/${candidate}/comm" || true
+    command+=" ${comm}"
+    [[ "${command,,}" == *vllm* ]] && {
+      printf '%s\n' "${candidate}"
+      return 0
+    }
+  done < <(ps -eo pid=,pgid=,stat= 2>/dev/null)
+  return 1
 }
 
 read_managed_process() {
-  local pid recorded_start pgid actual_start cmdline
+  local pid recorded_start pgid actual_start actual_pgid actual_state run_id="" member
 
   [[ -r "${PID_FILE}" ]] || return 1
   read -r pid recorded_start pgid < "${PID_FILE}" || return 1
   [[ "${pid}" =~ ^[1-9][0-9]*$ && "${recorded_start}" =~ ^[0-9]+$ && "${pgid}" =~ ^[1-9][0-9]*$ ]] || return 1
-  kill -0 "${pid}" 2>/dev/null || return 1
-  actual_start="$(proc_start_time "${pid}" 2>/dev/null || true)"
-  [[ -n "${actual_start}" && "${actual_start}" == "${recorded_start}" ]] || return 1
+  [[ -r "${RUN_ID_FILE}" ]] && run_id="$(<"${RUN_ID_FILE}")"
 
-  cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
-  [[ "${cmdline}" == *vllm* && "${cmdline}" == *serve* ]] || return 1
-  printf '%s %s\n' "${pid}" "${pgid}"
+  if kill -0 "${pid}" 2>/dev/null; then
+    actual_start="$(proc_start_time "${pid}" 2>/dev/null || true)"
+    actual_pgid="$(proc_group_id "${pid}" 2>/dev/null || true)"
+    actual_state="$(proc_state "${pid}" 2>/dev/null || true)"
+    if [[ -n "${actual_start}" && "${actual_start}" == "${recorded_start}" \
+      && "${actual_pgid}" == "${pgid}" && "${actual_state}" != Z ]]; then
+      printf '%s %s\n' "${pid}" "${pgid}"
+      return 0
+    fi
+  fi
+
+  member="$(find_managed_group_member "${pgid}" "${run_id}" 2>/dev/null || true)"
+  [[ -n "${member}" ]] || return 1
+  printf '%s %s\n' "${member}" "${pgid}"
 }
 
 remove_process_metadata() {
-  rm -f -- "${PID_FILE}" "${STARTED_AT_FILE}"
+  rm -f -- "${PID_FILE}" "${STARTED_AT_FILE}" "${RUN_ID_FILE}"
+}
+
+endpoint_serves_model() {
+  local base_url="$1" expected_model="$2" response compact
+  response="$(curl -fsS --max-time 5 "${base_url}/v1/models")" || return 1
+  compact="$(printf '%s' "${response}" | tr -d '[:space:]')"
+  awk -v needle="\"id\":\"${expected_model}\"" 'index($0, needle) { found=1 } END { exit !found }' <<< "${compact}"
+}
+
+listener_pids() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp 2>/dev/null \
+      | awk -v port=":${port}" '$4 ~ port "$" {print}' \
+      | grep -oE 'pid=[0-9]+' \
+      | cut -d= -f2 \
+      | sort -nu
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -nP -t -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | sort -nu
+  fi
+}
+
+recover_process_metadata() {
+  local pid pgid start_time member recovery_host recovery_port recovery_model recovery_base
+  local -a state=()
+
+  [[ -r "${STATE_FILE}" && -r "${PROFILE_FILE}" && -r "${CURRENT_LOG_FILE}" ]] || return 1
+  mapfile -t state < "${STATE_FILE}"
+  (( ${#state[@]} >= 3 )) || return 1
+  recovery_host="${state[0]}"
+  recovery_port="${state[1]}"
+  recovery_model="${state[2]}"
+  [[ -n "${recovery_host}" && "${recovery_port}" =~ ^[1-9][0-9]*$ \
+    && ${recovery_port} -le 65535 && -n "${recovery_model}" ]] || return 1
+  recovery_base="http://${recovery_host}:${recovery_port}"
+  endpoint_serves_model "${recovery_base}" "${recovery_model}" || return 1
+
+  while IFS= read -r pid; do
+    [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || continue
+    pgid="$(proc_group_id "${pid}" 2>/dev/null || true)"
+    [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] || continue
+    member="$(find_managed_group_member "${pgid}" 2>/dev/null || true)"
+    [[ -n "${member}" ]] || continue
+    start_time="$(proc_start_time "${member}" 2>/dev/null || true)"
+    [[ "${pgid}" =~ ^[1-9][0-9]*$ && "${start_time}" =~ ^[0-9]+$ ]] || continue
+    printf '%s %s %s\n' "${member}" "${start_time}" "${pgid}" > "${PID_FILE}.tmp"
+    mv -f -- "${PID_FILE}.tmp" "${PID_FILE}"
+    warn "Recovered managed vLLM process metadata from ${recovery_host}:${recovery_port} (PID ${member}, PGID ${pgid})."
+    return 0
+  done < <(listener_pids "${recovery_port}")
+  return 1
 }
 
 cleanup_stale_pid_file() {
-  if [[ -e "${PID_FILE}" ]] && ! read_managed_process >/dev/null 2>&1; then
+  read_managed_process >/dev/null 2>&1 && return 0
+  recover_process_metadata && return 0
+  if [[ -e "${PID_FILE}" ]]; then
     warn "Removing stale PID metadata: ${PID_FILE}"
     remove_process_metadata
   fi
@@ -342,7 +462,7 @@ build_vllm_command() {
 }
 
 write_process_metadata() {
-  local pid="$1" pgid="$2" start_time="$3" profile="$4" log_path="$5"
+  local pid="$1" pgid="$2" start_time="$3" profile="$4" log_path="$5" run_id="$6"
   local tmp_file="${PID_FILE}.tmp"
 
   printf '%s %s %s\n' "${pid}" "${start_time}" "${pgid}" > "${tmp_file}"
@@ -351,6 +471,7 @@ write_process_metadata() {
   date +%s > "${STARTED_AT_FILE}"
   printf '%s\n' "${log_path}" > "${CURRENT_LOG_FILE}"
   printf '%s\n%s\n%s\n' "${HOST}" "${PORT}" "${SERVED_MODEL_NAME}" > "${STATE_FILE}"
+  printf '%s\n' "${run_id}" > "${RUN_ID_FILE}"
 }
 
 show_log_tail() {
@@ -366,9 +487,9 @@ stop_service() {
   local managed pid pgid waited=0 self_pgid
 
   ensure_runtime_dir
+  cleanup_stale_pid_file
   managed="$(read_managed_process 2>/dev/null || true)"
   if [[ -z "${managed}" ]]; then
-    cleanup_stale_pid_file
     info "Qwen3.6-27B is not running."
     return 0
   fi
@@ -404,7 +525,7 @@ cancel_start() {
 }
 
 start_service() {
-  local profile="${1:-optimized}" managed pid pgid start_time timestamp log_path label_suffix=""
+  local profile="${1:-optimized}" managed pid pgid start_time timestamp log_path label_suffix="" run_id
   local elapsed=0
 
   validate_profile "${profile}"
@@ -439,7 +560,8 @@ start_service() {
   printf '\n\n' >> "${log_path}"
 
   info "Starting Qwen3.6-27B with profile '${profile}'..."
-  setsid "${VLLM_COMMAND[@]}" >> "${log_path}" 2>&1 < /dev/null &
+  run_id="$(date +%s%N)-$$-${RANDOM}"
+  VLLM_MANAGER_RUN_ID="${run_id}" setsid "${VLLM_COMMAND[@]}" >> "${log_path}" 2>&1 < /dev/null &
   pid=$!
   STARTED_BY_THIS_COMMAND=1
 
@@ -456,7 +578,7 @@ start_service() {
     kill -TERM "${pid}" 2>/dev/null || true
     die "Failed to record the vLLM process metadata"
   }
-  write_process_metadata "${pid}" "${pgid}" "${start_time}" "${profile}" "${log_path}"
+  write_process_metadata "${pid}" "${pgid}" "${start_time}" "${profile}" "${log_path}" "${run_id}"
   cleanup_old_logs
 
   trap cancel_start INT TERM
