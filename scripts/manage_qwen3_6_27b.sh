@@ -72,6 +72,7 @@ require_vllm_ascend_container() {
   if [[ "${IN_VLLM_ASCEND_CONTAINER:-}" != "1" ]]; then
     error "This script can only run inside the designated vLLM-Ascend container."
     error "Enter it with: docker exec -it vllm-ascend-env bash"
+    error "If this is an older container, recreate it with scripts/start_vllm_ascend_container.sh."
     exit 1
   fi
 }
